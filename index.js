@@ -14,7 +14,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-const MAX_NEWS_AGE_HOURS = 12;
+const MAX_NEWS_AGE_HOURS = 36;
 const DB_FILE = path.resolve('sent_news.json');
 
 const parser = new Parser({
