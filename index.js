@@ -14,7 +14,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.t
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const MAX_NEWS_AGE_HOURS = 36;
 
-// تحديد مسار التخزين الدائم (Railway Volume) لمنع تكرار الأخبار نهائياً
+// تحديد مسار التخزين الدائم (Railway Volume)
 const VOLUME_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || (fs.existsSync('/app/data') ? '/app/data' : '.');
 const DB_FILE = path.resolve(VOLUME_DIR, 'sent_news.json');
 
@@ -33,7 +33,6 @@ const parser = new Parser({
   }
 });
 
-// المصادر المعتمدة والمستقرة
 const RSS_FEEDS = [
   'https://www.france24.com/ar/sport/rss',
   'https://www.skynewsarabia.com/web/rss/sport.xml',
@@ -69,7 +68,6 @@ const FOOTBALL_ENTITIES = [
   'كرة القدم', 'المونديال', 'كأس العالم', 'قمة', 'مواجهة'
 ];
 
-// دالة لتنظيف الرموز الخاصة لتفادي تعطل كود تليجرام مع HTML
 function escapeHtml(text) {
   if (!text) return '';
   return text
@@ -117,7 +115,6 @@ function extractRssImageUrl(item) {
   return DEFAULT_FOOTBALL_IMAGE;
 }
 
-// سحب الصورة الأصلية فائقة الدقة بمهلة 6 ثوانٍ وفحص متعدد للوسوم
 async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
   try {
     const response = await axios.get(articleUrl, {
@@ -136,7 +133,7 @@ async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
       return ogMatch[1].replace(/&amp;/g, '&');
     }
   } catch {
-    // العودة للرابط البديل فوراً عند حدوث بطء
+    // العودة للرابط البديل فوراً
   }
 
   if (fallbackUrl && fallbackUrl !== DEFAULT_FOOTBALL_IMAGE) {
@@ -200,7 +197,6 @@ async function generateAISummary(title, snippet, category) {
 المطلوب:
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
-  // الأسماء الرسمية المعتمدة ذات الحصص المرتفعة (1500 طلب يومياً)
   const modelsToTry = ['gemini-1.5-flash', 'gemini-1.5-flash-8b'];
 
   for (const modelName of modelsToTry) {
@@ -210,32 +206,6 @@ async function generateAISummary(title, snippet, category) {
       const text = result.response.text()?.trim();
       if (text) return text;
     } catch (err) {
-      console.warn(`تعذر التلخيص بنموذج ${modelName} (${err.message.slice(0, 80)}...). جاري المحاولة ببديل...`);
-    }
-  }
-
-  return null;
-}
-  const prompt = `أنت صحفي رياضي خبير بكرة القدم.
-الخبر:
-- التصنيف: ${category}
-- العنوان: ${title}
-- التفاصيل: ${snippet || title}
-
-المطلوب:
-اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
-
-  // قائمة نماذج خفيفة بحصص مجانية ضخمة (1500 طلب يومياً) مع تبديل تلقائي
-  const modelsToTry = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
-
-  for (const modelName of modelsToTry) {
-    try {
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      const text = result.response.text()?.trim();
-      if (text) return text;
-    } catch (err) {
-      // في حال وجود ضغط على النموذج، تتم تجربة النموذج التالي
       console.warn(`تعذر التلخيص بنموذج ${modelName} (${err.message.slice(0, 80)}...). جاري المحاولة ببديل...`);
     }
   }
