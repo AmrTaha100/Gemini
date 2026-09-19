@@ -8,7 +8,6 @@ dotenv.config();
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// نقبل الأخبار الحديثة فقط (آخر 12 ساعة) لضمان سرعة متابعة النتائج والصفقات
 const MAX_NEWS_AGE_HOURS = 12;
 
 const parser = new Parser({
@@ -17,37 +16,44 @@ const parser = new Parser({
   }
 });
 
-// مصادر إخبارية رياضية عربية سريعة التحديث
+// خلاصات موثوقة ونظيفة (تم استبعاد RT Arabic لتجنب تسريب الأخبار العامة والسياسية)
 const RSS_FEEDS = [
   'https://feeds.bbci.co.uk/arabic/sport/rss.xml',
-  'https://www.skynewsarabia.com/web/rss/sport.xml',
-  'https://arabic.rt.com/rss/sport/'
+  'https://www.skynewsarabia.com/web/rss/sport.xml'
 ];
 
-// استبعاد أي رياضات أخرى أو حوادث عامة
+// قائمة استبعاد شاملة للشؤون السياسية والاقتصادية والرياضات الأخرى
 const BLACKLIST_KEYWORDS = [
-  'مقتل', 'قتلى', 'ضحايا', 'انفجار', 'حادث', 'اغتيال', 'صاروخ', 
-  'غارة', 'قصف', 'شرطة', 'جيش', 'مسجد', 'زلزال', 'حريق', 'محاكمة',
+  // اقتصاد وسياسة وحروب
+  'نفط', 'أسعار النفط', 'اقتصاد', 'بورصة', 'أسهم', 'دولار', 'تضخم',
+  'مورغان', 'ترامب', 'بايدن', 'بوتين', 'إيران', 'حرب', 'صاروخ', 'قصف',
+  'غارة', 'مقتل', 'قتلى', 'ضحايا', 'انفجار', 'حادث', 'اغتيال', 'شرطة',
+  'جيش', 'مسجد', 'زلزال', 'حريق', 'محاكمة', 'انتخابات', 'حكومة', 'رئيس الوزراء',
+  
+  // رياضات أخرى
   'كرة السلة', 'كرة سلة', 'تنس', 'كرة اليد', 'كرة يد', 'كرة الطائرة',
   'فورمولا', 'سباق', 'ملاكمة', 'مصارعة', 'جودو', 'سباحة', 'ألعاب قوى',
+  
+  // محتوى تفاعلي غير إخباري
   'بث مباشر', 'مشاهدة مباراة', 'كويز', 'بودكاست'
 ];
 
-// كلمات مفتاحية تركز على انتقالات اللاعبين
+// عبارات مخصصة للانتقالات (تجنبنا الكلمات المفردة مثل "وقع" لمنع الالتباس مع "توقع" أو "موقع")
 const TRANSFER_KEYWORDS = [
-  'صفقة', 'صفقات', 'انتقال', 'انتقالات', 'ميركاتو', 'يوقع', 'وقع', 
-  'تعاقد', 'يتعاقد', 'عرض رسمي', 'شرط جزائي', 'تمديد عقد', 'يجدد', 
-  'إعارة', 'رحيل', 'يقترب من', 'مفاوضات', 'رسمياً'
+  'صفقة', 'صفقات', 'انتقال', 'انتقالات', 'ميركاتو', 'تعاقد', 'يتعاقد',
+  'وقع مع', 'يوقع مع', 'وقع رسمياً', 'يوقع رسمياً', 'توقيع عقد', 'عقد جديد',
+  'شرط جزائي', 'تمديد عقد', 'يجدد عقده', 'إعارة', 'رحيل', 'يقترب من الانتقال',
+  'مفاوضات لضم', 'سوق الانتقالات'
 ];
 
-// كلمات مفتاحية تركز على نتائج المباريات ومجرياتها
+// نتائج ومباريات
 const RESULTS_KEYWORDS = [
   'فوز', 'يفوز', 'انتصار', 'هزيمة', 'يسحق', 'يكتسح', 'يتعادل', 'تعادل',
   'أهداف', 'هدف', 'هاتريك', 'ثنائية', 'ركلات ترجيح', 'ريمونتادا',
   'يتأهل', 'تأهل', 'يقصي', 'صدارة', 'ترتيب الدوري', 'نهائي', 'نصف نهائي'
 ];
 
-// كبار الأندية والبطولات لزيادة أهمية الخبر
+// أندية وبطولات كبرى
 const TOP_TEAMS_AND_LEAGUES = [
   'ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 'أرسنال', 
   'مانشستر يونايتد', 'تشيلسي', 'بايرن ميونخ', 'باريس سان جيرمان',
@@ -74,33 +80,33 @@ async function sendTelegramMessage(text) {
 function classifyAndScore(title) {
   const cleanTitle = title.toLowerCase();
 
-  // 1. فلتر الاستبعاد
+  // 1. فلتر الاستبعاد الفوري للسياسة والاقتصاد والرياضات الأخرى
   const isBlacklisted = BLACKLIST_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isBlacklisted) return null;
 
   let score = 0;
-  let category = 'عام';
+  let category = '';
 
-  // هل هو خبر انتقالات؟
+  // 2. فحص الصفقات والانتقالات
   const isTransfer = TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isTransfer) {
     score += 4;
     category = 'انتقالات 🔄';
   }
 
-  // هل هو خبر نتائج وأهداف؟
+  // 3. فحص النتائج والمباريات
   const isResult = RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isResult) {
     score += 4;
     category = 'نتائج ومباريات ⚽';
   }
 
-  // إذا لم يكن نتيجة ولا انتقال، نتجاهله لأنك حددت تفضيلك لهما
+  // استبعاد أي خبر لا ينتمي بوضوح لأحد التصنيفين
   if (!isTransfer && !isResult) {
     return null;
   }
 
-  // دعم النتيجة إذا كان الخبر لنادٍ أو بطولة كبرى
+  // تعزيز النقاط للأندية الكبرى
   TOP_TEAMS_AND_LEAGUES.forEach(team => {
     if (cleanTitle.includes(team.toLowerCase())) score += 2;
   });
@@ -144,7 +150,7 @@ async function fetchTopFootballNews() {
     }
   }
 
-  // الترتيب: الأحدث أولاً، مع تقديم الأخبار القوية جداً
+  // الترتيب: الأحدث أولاً، ثم الأهمية
   candidates.sort((a, b) => {
     const timeDiffHours = (b.pubDate - a.pubDate) / (1000 * 60 * 60);
     if (Math.abs(timeDiffHours) >= 2) {
@@ -153,12 +159,11 @@ async function fetchTopFootballNews() {
     return b.score - a.score;
   });
 
-  // نأخذ حتى 3 أخبار ممتازة
   return candidates.slice(0, 3);
 }
 
 async function runNewsJob() {
-  console.log(`[${new Date().toISOString()}] فحص الصفقات والنتائج الجديدة...`);
+  console.log(`[${new Date().toISOString()}] فحص دقيق للنتائج والصفقات...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('تأكد من ضبط المتغيرات البيئية.');
@@ -168,7 +173,7 @@ async function runNewsJob() {
   const selectedNews = await fetchTopFootballNews();
 
   if (selectedNews.length === 0) {
-    console.log('لا توجد نتائج أو صفقات جديدة خلال هذه الساعة.');
+    console.log('لا توجد صفقات أو نتائج جديدة في هذه الدورة.');
     return;
   }
 
@@ -181,7 +186,7 @@ async function runNewsJob() {
   });
 
   await sendTelegramMessage(message);
-  console.log(`تم إرسال ${selectedNews.length} أخبار بنجاح.`);
+  console.log(`تم إرسال ${selectedNews.length} أخبار مفلترة بدقة.`);
 
   if (sentArticles.size > 200) {
     const arr = Array.from(sentArticles);
@@ -191,10 +196,8 @@ async function runNewsJob() {
   }
 }
 
-// تجربة فورية عند الإقلاع
 runNewsJob();
 
-// الفحص كل ساعة بانتظام
 cron.schedule('0 * * * *', () => {
   runNewsJob();
 });
