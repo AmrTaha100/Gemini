@@ -13,7 +13,10 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.t
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const MAX_NEWS_AGE_HOURS = 36;
-const DB_FILE = path.resolve('sent_news.json');
+
+// تحديد مسار التخزين الدائم (Railway Volume) لمنع تكرار الأخبار نهائياً
+const VOLUME_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || (fs.existsSync('/app/data') ? '/app/data' : '.');
+const DB_FILE = path.resolve(VOLUME_DIR, 'sent_news.json');
 
 const DEFAULT_FOOTBALL_IMAGE = 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=1200&q=80';
 
@@ -30,12 +33,12 @@ const parser = new Parser({
   }
 });
 
-// 4 مصادر كروية عربية موثوقة ومستقرة تماماً للسيرفرات السحابية
+// المصادر المعتمدة والمستقرة
 const RSS_FEEDS = [
-  'https://www.france24.com/ar/sport/rss',             // فرانس 24 رياضة
-  'https://www.skynewsarabia.com/web/rss/sport.xml',    // سكاي نيوز عربية
-  'https://www.hespress.com/sport/feed',               // هسبريس رياضة (تغطية دوريات ونجوم)
-  'https://arabic.cnn.com/api/v1/rss/sport/rss.xml'    // سي إن إن بالعربية رياضة
+  'https://www.france24.com/ar/sport/rss',
+  'https://www.skynewsarabia.com/web/rss/sport.xml',
+  'https://www.hespress.com/sport/feed',
+  'https://arabic.cnn.com/api/v1/rss/sport/rss.xml'
 ];
 
 const BLACKLIST_KEYWORDS = [
@@ -66,23 +69,37 @@ const FOOTBALL_ENTITIES = [
   'كرة القدم', 'المونديال', 'كأس العالم', 'قمة', 'مواجهة'
 ];
 
+// دالة لتنظيف الرموز الخاصة لتفادي تعطل كود تليجرام مع HTML
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function loadSentArticles() {
   try {
     if (fs.existsSync(DB_FILE)) {
       return new Set(JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')));
     }
   } catch (err) {
-    console.error('خطأ في قراءة ملف sent_news.json:', err.message);
+    console.error('خطأ في قراءة ملف التخزين الدائم:', err.message);
   }
   return new Set();
 }
 
 function saveSentArticles(articlesSet) {
   try {
+    const dir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     const list = Array.from(articlesSet);
-    fs.writeFileSync(DB_FILE, JSON.stringify(list.slice(-200), null, 2), 'utf-8');
+    fs.writeFileSync(DB_FILE, JSON.stringify(list.slice(-300), null, 2), 'utf-8');
+    console.log(`تم حفظ قاعدة البيانات بنجاح في: ${DB_FILE}`);
   } catch (err) {
-    console.error('خطأ في حفظ ملف sent_news.json:', err.message);
+    console.error('خطأ في كتابة ملف التخزين الدائم:', err.message);
   }
 }
 
@@ -100,25 +117,32 @@ function extractRssImageUrl(item) {
   return DEFAULT_FOOTBALL_IMAGE;
 }
 
+// سحب الصورة الأصلية فائقة الدقة بمهلة 6 ثوانٍ وفحص متعدد للوسوم
 async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
   try {
     const response = await axios.get(articleUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       },
-      timeout: 3500
+      timeout: 6000
     });
 
     const html = response.data;
-    const ogMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
-                    html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+    const ogMatch = html.match(/<meta[^>]*property=["'](?:og:image|og:image:secure_url)["'][^>]*content=["']([^"']+)["']/i) ||
+                    html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["'](?:og:image|og:image:secure_url)["']/i) ||
+                    html.match(/<meta[^>]*name=["'](?:twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']/i);
 
     if (ogMatch && ogMatch[1]) {
       return ogMatch[1].replace(/&amp;/g, '&');
     }
   } catch {
-    // العودة للرابط البديل فوراً في حال التأخر
+    // العودة للرابط البديل فوراً عند حدوث بطء
   }
+
+  if (fallbackUrl && fallbackUrl !== DEFAULT_FOOTBALL_IMAGE) {
+    return fallbackUrl.replace(/\/thumbnail\//i, '/original/').replace(/_\d+x\d+\./i, '.');
+  }
+
   return fallbackUrl;
 }
 
@@ -146,7 +170,7 @@ async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
       reply_markup: inlineKeyboard
     });
   } catch (err) {
-    console.error('فشل إرسال بطاقة الصورة، جاري الإرسال كرسالة نصية:', err.response?.data?.description || err.message);
+    console.error('فشل إرسال الصورة، جاري الإرسال كرسالة نصية:', err.response?.data?.description || err.message);
     try {
       await axios.post(messageEndpoint, {
         chat_id: CHAT_ID,
@@ -156,7 +180,7 @@ async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
         reply_markup: inlineKeyboard
       });
     } catch (fallbackErr) {
-      console.error('فشل الإرسال البديل أيضاً:', fallbackErr.response?.data?.description || fallbackErr.message);
+      console.error('فشل الإرسال البديل:', fallbackErr.response?.data?.description || fallbackErr.message);
     }
   }
 }
@@ -217,7 +241,7 @@ function classifyAndScore(title) {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار من 4 مصادر دولية وتجهيز البطاقات...`);
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار بالنسخة الشاملة والمصادر المستقرة...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -265,7 +289,7 @@ async function run() {
   const selectedNews = candidates.slice(0, 3);
 
   if (selectedNews.length === 0) {
-    console.log('لا توجد أخبار جديدة ومهمة. إنهاء العملية.');
+    console.log('لا توجد أخبار جديدة ومهمة في هذه الدورة. إنهاء العملية.');
     process.exit(0);
   }
 
@@ -278,13 +302,17 @@ async function run() {
       generateAISummary(news.title, news.snippet, news.category)
     ]);
 
-    let caption = `<b>${news.category} | ${news.title}</b>\n\n`;
-    if (summary) {
-      caption += `📌 <i>${summary}</i>`;
+    const safeCategory = escapeHtml(news.category);
+    const safeTitle = escapeHtml(news.title);
+    const safeSummary = summary ? escapeHtml(summary) : '';
+
+    let caption = `<b>${safeCategory} | ${safeTitle}</b>\n\n`;
+    if (safeSummary) {
+      caption += `📌 <i>${safeSummary}</i>`;
     }
 
     await sendTelegramPhotoCard(highResImage, caption, news.link);
-    console.log(`تم إرسال البطاقة التفاعلية (${i + 1}/${selectedNews.length}): ${news.title}`);
+    console.log(`تم إرسال البطاقة التفاعلية بنجاح (${i + 1}/${selectedNews.length}): ${news.title}`);
 
     if (i < selectedNews.length - 1) {
       await sleep(1000);
@@ -292,7 +320,7 @@ async function run() {
   }
 
   saveSentArticles(sentArticles);
-  console.log(`اكتمل إرسال جميع البطاقات التفاعلية بنجاح.`);
+  console.log(`اكتملت الدورة بنجاح.`);
   process.exit(0);
 }
 
