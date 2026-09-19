@@ -14,7 +14,6 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.t
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const MAX_NEWS_AGE_HOURS = 36;
 
-// تحديد مسار التخزين الدائم (Railway Volume)
 const VOLUME_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || (fs.existsSync('/app/data') ? '/app/data' : '.');
 const DB_FILE = path.resolve(VOLUME_DIR, 'sent_news.json');
 
@@ -197,7 +196,8 @@ async function generateAISummary(title, snippet, category) {
 المطلوب:
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
-  const modelsToTry = ['gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+  // نماذج الجيل الحديث الخفيفة ذات الحصص المفتوحة
+  const modelsToTry = ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.6-flash'];
 
   for (const modelName of modelsToTry) {
     try {
@@ -206,7 +206,7 @@ async function generateAISummary(title, snippet, category) {
       const text = result.response.text()?.trim();
       if (text) return text;
     } catch (err) {
-      console.warn(`تعذر التلخيص بنموذج ${modelName} (${err.message.slice(0, 80)}...). جاري المحاولة ببديل...`);
+      console.warn(`تعذر التلخيص بنموذج ${modelName}:`, err.message || err);
     }
   }
 
