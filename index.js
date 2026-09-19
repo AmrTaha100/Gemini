@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import Parser from 'rss-parser';
-import cron from 'node-cron';
 import dotenv from 'dotenv';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
@@ -12,10 +11,7 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// إعداد نموذج الذكاء الاصطناعي
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-
-// الحد الأقصى لعمر الخبر (24 ساعة لضمان تغطية نتائج ومباريات اليوم السابق)
 const MAX_NEWS_AGE_HOURS = 24;
 const DB_FILE = path.resolve('sent_news.json');
 
@@ -25,29 +21,21 @@ const parser = new Parser({
   }
 });
 
-// خلاصات موثوقة ومخصصة للرياضة فقط (تم استبعاد المصادر التي تخلط السياسة)
 const RSS_FEEDS = [
   'https://feeds.bbci.co.uk/arabic/sport/rss.xml',
   'https://www.skynewsarabia.com/web/rss/sport.xml'
 ];
 
-// قائمة استبعاد شاملة للشؤون السياسية والاقتصادية والرياضات الأخرى
 const BLACKLIST_KEYWORDS = [
-  // اقتصاد وسياسة وحروب لمنع أي تسرب إخباري
   'نفط', 'أسعار النفط', 'اقتصاد', 'بورصة', 'أسهم', 'دولار', 'تضخم',
   'مورغان', 'ترامب', 'بايدن', 'بوتين', 'إيران', 'حرب', 'صاروخ', 'قصف',
   'غارة', 'مقتل', 'قتلى', 'ضحايا', 'انفجار', 'حادث', 'اغتيال', 'شرطة',
   'جيش', 'مسجد', 'زلزال', 'حريق', 'محاكمة', 'انتخابات', 'حكومة', 'رئيس الوزراء',
-  
-  // رياضات أخرى للتأكد من حصرية كرة القدم
   'كرة السلة', 'كرة سلة', 'تنس', 'كرة اليد', 'كرة يد', 'كرة الطائرة',
   'فورمولا', 'سباق', 'ملاكمة', 'مصارعة', 'جودو', 'سباحة', 'ألعاب قوى',
-  
-  // محتوى تفاعلي وبثوث
   'بث مباشر', 'مشاهدة مباراة', 'كويز', 'بودكاست'
 ];
 
-// عبارات صريحة للانتقالات (تجنب الكلمات المفردة مثل "وقع" لمنع تشابهها مع "توقع")
 const TRANSFER_KEYWORDS = [
   'صفقة', 'صفقات', 'انتقال', 'انتقالات', 'ميركاتو', 'تعاقد', 'يتعاقد',
   'وقع مع', 'يوقع مع', 'وقع رسمياً', 'يوقع رسمياً', 'توقيع عقد', 'عقد جديد',
@@ -55,14 +43,12 @@ const TRANSFER_KEYWORDS = [
   'مفاوضات لضم', 'سوق الانتقالات'
 ];
 
-// نتائج ومجريات المباريات
 const RESULTS_KEYWORDS = [
   'فوز', 'يفوز', 'انتصار', 'هزيمة', 'يسحق', 'يكتسح', 'يتعادل', 'تعادل',
   'أهداف', 'هدف', 'هاتريك', 'ثنائية', 'ركلات ترجيح', 'ريمونتادا',
   'يتأهل', 'تأهل', 'يقصي', 'صدارة', 'ترتيب الدوري', 'نهائي', 'نصف نهائي'
 ];
 
-// أندية وبطولات كبرى
 const TOP_TEAMS_AND_LEAGUES = [
   'ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 'أرسنال', 
   'مانشستر يونايتد', 'تشيلسي', 'بايرن ميونخ', 'باريس سان جيرمان',
@@ -70,12 +56,10 @@ const TOP_TEAMS_AND_LEAGUES = [
   'دوري أبطال أوروبا', 'البريميرليغ', 'الليغا', 'الدوري الإنجليزي', 'الدوري الإسباني'
 ];
 
-// قراءة الأخبار المرسلة سابقاً من ملف محلي لمنع التكرار نهائياً
 function loadSentArticles() {
   try {
     if (fs.existsSync(DB_FILE)) {
-      const raw = fs.readFileSync(DB_FILE, 'utf-8');
-      return new Set(JSON.parse(raw));
+      return new Set(JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')));
     }
   } catch (err) {
     console.error('خطأ في قراءة ملف sent_news.json:', err.message);
@@ -83,12 +67,10 @@ function loadSentArticles() {
   return new Set();
 }
 
-// حفظ الأخبار المرسلة في الملف
 function saveSentArticles(articlesSet) {
   try {
     const list = Array.from(articlesSet);
-    const trimmed = list.slice(-200); // حفظ آخر 200 خبر فقط
-    fs.writeFileSync(DB_FILE, JSON.stringify(trimmed, null, 2), 'utf-8');
+    fs.writeFileSync(DB_FILE, JSON.stringify(list.slice(-200), null, 2), 'utf-8');
   } catch (err) {
     console.error('خطأ في حفظ ملف sent_news.json:', err.message);
   }
@@ -97,82 +79,59 @@ function saveSentArticles(articlesSet) {
 const sentArticles = loadSentArticles();
 
 async function sendTelegramMessage(text) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
   try {
-    await axios.post(url, {
+    await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
       chat_id: CHAT_ID,
       text: text,
       parse_mode: 'HTML',
       disable_web_page_preview: false
     });
   } catch (error) {
-    console.error('خطأ أثناء إرسال رسالة التليجرام:', error.response?.data || error.message);
+    console.error('خطأ أثناء إرسال تليجرام:', error.response?.data || error.message);
   }
 }
 
-// تلخيص تفاصيل الخبر كروياً باستخدام Gemini
 async function generateAISummary(title, snippet, category) {
   if (!GEMINI_API_KEY) return null;
-
-  const prompt = `أنت صحفي رياضي متخصص وخبير في كرة القدم الأوروبية والعالمية.
-لدينا الخبر التالي:
+  const prompt = `أنت صحفي رياضي متخصص في كرة القدم.
+الخبر:
 - التصنيف: ${category}
 - العنوان: ${title}
-- التفاصيل المتوفرة: ${snippet || title}
+- التفاصيل: ${snippet || title}
 
 المطلوب:
-اكتب ملخصاً دقيقاً ومكثفاً في سطرين فقط باللغة العربية لعشاق الكرة:
-- إذا كان انتقالاً: اذكر اسم اللاعب، الناديين، وتفاصيل العقد أو المبلغ المالي إن وجدت.
-- إذا كانت مباراة: اذكر النتيجة النهائية، مسجلي الأهداف أو النقطة المفصلية.
-- ادخل في الملخص مباشرة دون أي مقدمات أو تحيات.`;
+اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون مقدمات.`;
 
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const result = await model.generateContent(prompt);
     return result.response.text()?.trim();
   } catch (err) {
-    console.error('فشل التلخيص بالذكاء الاصطناعي:', err.message);
+    console.error('فشل التلخيص:', err.message);
     return null;
   }
 }
 
 function classifyAndScore(title) {
   const cleanTitle = title.toLowerCase();
-
-  // 1. استبعاد الأخبار السياسية والاقتصادية والرياضات الأخرى
-  const isBlacklisted = BLACKLIST_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
-  if (isBlacklisted) return null;
+  if (BLACKLIST_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) return null;
 
   let score = 0;
   let category = '';
 
-  // 2. التحقق من الصفقات والانتقالات
-  const isTransfer = TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
-  if (isTransfer) {
+  if (TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) {
     score += 5;
     category = 'انتقالات 🔄';
-  }
-
-  // 3. التحقق من النتائج ومجريات المباريات
-  const isResult = RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
-  if (isResult) {
+  } else if (RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) {
     score += 5;
     category = 'نتائج ومباريات ⚽';
-  }
-
-  // 4. إذا لم يكن نتيجة ولا انتقال صريح، نتحقق من ارتباطه بكرة القدم والأندية الكبرى
-  const matchesFootball = TOP_TEAMS_AND_LEAGUES.some(team => cleanTitle.includes(team.toLowerCase())) ||
-                          cleanTitle.includes('كرة القدم') || cleanTitle.includes('كأس') || cleanTitle.includes('دوري');
-
-  if (!category && matchesFootball) {
+  } else if (TOP_TEAMS_AND_LEAGUES.some(team => cleanTitle.includes(team.toLowerCase())) || cleanTitle.includes('كرة القدم')) {
     category = 'أخبار الكرة ⚽';
     score += 2;
   }
 
-  // إذا لم يكن له أي علاقة بكرة القدم نتجاهله
   if (!category) return null;
 
-  // دعم الأندية والبطولات الكبرى بنقاط إضافية
   TOP_TEAMS_AND_LEAGUES.forEach(team => {
     if (cleanTitle.includes(team.toLowerCase())) score += 2;
   });
@@ -180,95 +139,71 @@ function classifyAndScore(title) {
   return { score, category };
 }
 
-async function fetchTopFootballNews() {
+async function run() {
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار...`);
+
+  if (!BOT_TOKEN || !CHAT_ID) {
+    console.error('بيانات تليجرام مفقودة.');
+    process.exit(1);
+  }
+
   const candidates = [];
   const now = Date.now();
 
   for (const feedUrl of RSS_FEEDS) {
     try {
       const feed = await parser.parseURL(feedUrl);
-
       for (const item of feed.items) {
         const id = item.guid || item.link;
         const title = item.title?.trim() || '';
         const snippet = item.contentSnippet?.trim() || item.content?.trim() || '';
         const articleDate = new Date(item.pubDate || item.isoDate || now);
         
-        const ageInHours = (now - articleDate.getTime()) / (1000 * 60 * 60);
-        if (ageInHours > MAX_NEWS_AGE_HOURS) continue;
+        if ((now - articleDate.getTime()) / (1000 * 60 * 60) > MAX_NEWS_AGE_HOURS) continue;
 
         if (!sentArticles.has(id)) {
           const analysis = classifyAndScore(title);
           if (analysis) {
             candidates.push({
-              id: id,
-              title: title,
-              snippet: snippet,
-              link: item.link,
-              score: analysis.score,
-              category: analysis.category,
-              pubDate: articleDate
+              id, title, snippet, link: item.link,
+              score: analysis.score, category: analysis.category, pubDate: articleDate
             });
           }
         }
       }
     } catch (err) {
-      console.error(`تعذر جلب الخلاصة من ${feedUrl}:`, err.message);
+      console.error(`خطأ في الخلاصة ${feedUrl}:`, err.message);
     }
   }
 
-  // الترتيب: الأحدث أولاً، مع ترجيح الأخبار ذات النقاط الأعلى
-  candidates.sort((a, b) => {
-    const timeDiffHours = (b.pubDate - a.pubDate) / (1000 * 60 * 60);
-    if (Math.abs(timeDiffHours) >= 2) return b.pubDate - a.pubDate;
-    return b.score - a.score;
-  });
+  candidates.sort((a, b) => b.score !== a.score ? b.score - a.score : b.pubDate - a.pubDate);
+  const selectedNews = candidates.slice(0, 3);
 
-  return candidates.slice(0, 3);
-}
-
-async function runNewsJob() {
-  console.log(`[${new Date().toISOString()}] بدء فحص وتلخيص جديد الكرة...`);
-
-  if (!BOT_TOKEN || !CHAT_ID) {
-    console.error('تأكد من ضبط متغيرات التليجرام في البيئة.');
-    return;
-  }
-
-  const selectedNews = await fetchTopFootballNews();
-
+  // إذا لم يجد أخباراً تطابق الشروط، يغلق الكود فوراً ويتوقف تماماً
   if (selectedNews.length === 0) {
-    console.log('لا توجد صفقات أو نتائج جديدة لإرسالها في هذه الدورة.');
-    return;
+    console.log('لا توجد أخبار جديدة ومهمة. إيقاف التشغيل فوراً.');
+    process.exit(0);
   }
 
+  // إذا وجد أخباراً، يلخصها ويرسلها ثم يغلق الكود فوراً
   let message = `🔥 <b>جديد الانتقالات ونتائج الكرة:</b>\n\n`;
 
   for (let i = 0; i < selectedNews.length; i++) {
     const news = selectedNews[i];
     sentArticles.add(news.id);
-
-    // إنشاء ملخص مركز باستخدام Gemini
     const summary = await generateAISummary(news.title, news.snippet, news.category);
 
     message += `<b>${i + 1}. [${news.category}] ${news.title}</b>\n`;
-    if (summary) {
-      message += `📌 <i>${summary}</i>\n`;
-    }
+    if (summary) message += `📌 <i>${summary}</i>\n`;
     message += `🔗 <a href="${news.link}">التفاصيل الكاملة</a>\n\n`;
   }
 
-  // حفظ المعرفات لتفادي التكرار بعد إعادة التشغيل
   saveSentArticles(sentArticles);
-
   await sendTelegramMessage(message);
-  console.log(`تم إرسال وتلخيص ${selectedNews.length} أخبار بنجاح.`);
+  console.log(`تم الإرسال بنجاح. إنهاء العملية.`);
+
+  // إيقاف الكود والخروج التام من النظام
+  process.exit(0);
 }
 
-// تشغيل فوري للتأكد من عمل البوت
-runNewsJob();
-
-// الجدولة كل ساعة
-cron.schedule('0 * * * *', () => {
-  runNewsJob();
-});
+run();
