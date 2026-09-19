@@ -9,25 +9,24 @@ dotenv.config();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : '';
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-
-// توسيع المدى إلى 36 ساعة لضمان التقاط كل ما هو مهم دون تفويت أي خبر بدقائق
 const MAX_NEWS_AGE_HOURS = 36;
 const DB_FILE = path.resolve('sent_news.json');
 
+// حل أزمة خطأ 406 بإضافة ترويسات قبول الـ RSS والـ XML كاملة
 const parser = new Parser({
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/rss+xml, application/xml, text/xml, */*'
   }
 });
 
-// مصادر رياضية متخصصة ومستقرة تماماً
 const RSS_FEEDS = [
-  'https://www.france24.com/ar/sport/rss',                                 // فرانس 24 رياضة
-  'https://arabic.euronews.com/rss?format=mrss&level=theme&name=sport',   // يورونيوز رياضة
-  'https://www.skynewsarabia.com/web/rss/sport.xml'                        // سكاي نيوز
+  'https://www.france24.com/ar/sport/rss',
+  'https://arabic.euronews.com/rss?format=mrss&level=theme&name=sport',
+  'https://www.skynewsarabia.com/web/rss/sport.xml'
 ];
 
 const BLACKLIST_KEYWORDS = [
@@ -49,7 +48,6 @@ const RESULTS_KEYWORDS = [
   'يتأهل', 'تأهل', 'يقصي', 'صدارة', 'ترتيب الدوري', 'نهائي', 'نصف نهائي'
 ];
 
-// أندية وبطولات ونجوم كرة القدم العالمية
 const FOOTBALL_ENTITIES = [
   'ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 'أرسنال', 
   'مانشستر يونايتد', 'تشيلسي', 'بايرن ميونخ', 'باريس سان جيرمان',
@@ -95,18 +93,22 @@ async function sendTelegramMessage(text) {
 }
 
 async function generateAISummary(title, snippet, category) {
-  if (!GEMINI_API_KEY) return null;
-  const prompt = `أنت صحفي رياضي متخصص في كرة القدم.
+  if (!GEMINI_API_KEY) {
+    console.error('مفتاح GEMINI_API_KEY غير موجود في متغيرات البيئة.');
+    return null;
+  }
+
+  const prompt = `أنت صحفي رياضي خبير بكرة القدم.
 الخبر:
 - التصنيف: ${category}
 - العنوان: ${title}
 - التفاصيل: ${snippet || title}
 
 المطلوب:
-اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون مقدمات.`;
+اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
-  // تجربة النماذج الحديثة بالتتابع لضمان استقرار التلخيص دائماً
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+  // الأسماء الرسمية الأكثر استقراراً في Gemini API
+  const modelsToTry = ['gemini-2.0-flash', 'gemini-1.5-flash-latest'];
 
   for (const modelName of modelsToTry) {
     try {
@@ -114,51 +116,33 @@ async function generateAISummary(title, snippet, category) {
       const result = await model.generateContent(prompt);
       return result.response.text()?.trim();
     } catch (err) {
-      // تجربة الموديل التالي في حال عدم التوفر
-      continue;
+      console.error(`خطأ مع النموذج [${modelName}]:`, err.message);
     }
   }
-
-  console.error('تعذر توليد التلخيص عبر النماذج المتاحة.');
   return null;
 }
 
 function classifyAndScore(title) {
   const cleanTitle = title.toLowerCase();
 
-  // 1. استبعاد الرياضات الأخرى والمحتوى غير الرياضي
-  const isBlacklisted = BLACKLIST_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
-  if (isBlacklisted) return null;
+  if (BLACKLIST_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) return null;
 
   let score = 0;
   let category = '';
 
-  // 2. فحص الصفقات
-  const isTransfer = TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
-  if (isTransfer) {
+  if (TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) {
     score += 5;
-    category = 'انتقالات 🔄';
-  }
-
-  // 3. فحص المباريات والنتائج
-  const isResult = RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
-  if (isResult) {
+    category = 'انتقالات';
+  } else if (RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) {
     score += 5;
-    category = 'نتائج ومباريات ⚽';
-  }
-
-  // 4. فحص الأندية والنجوم والأحداث الكروية
-  const isFootballRelated = FOOTBALL_ENTITIES.some(entity => cleanTitle.includes(entity.toLowerCase()));
-  
-  if (!category && isFootballRelated) {
-    category = 'أخبار الكرة ⚽';
+    category = 'نتائج ومباريات';
+  } else if (FOOTBALL_ENTITIES.some(e => cleanTitle.includes(e.toLowerCase()))) {
+    category = 'أخبار الكرة';
     score += 3;
   }
 
-  // إذا لم يكن الخبر كروياً نتجاهله
   if (!category) return null;
 
-  // نقاط إضافية للأندية الكبرى ونجوم الصف الأول
   FOOTBALL_ENTITIES.forEach(entity => {
     if (cleanTitle.includes(entity.toLowerCase())) score += 2;
   });
@@ -209,7 +193,7 @@ async function run() {
   const selectedNews = candidates.slice(0, 3);
 
   if (selectedNews.length === 0) {
-    console.log('لا توجد أخبار جديدة مطابقة. إغلاق العملية.');
+    console.log('لا توجد أخبار جديدة ومهمة. إنهاء العملية.');
     process.exit(0);
   }
 
@@ -220,7 +204,6 @@ async function run() {
     sentArticles.add(news.id);
     const summary = await generateAISummary(news.title, news.snippet, news.category);
 
-    // تنسيق نظيف بدون أي أقواس لتجنب تشويه الاتجاهات في تليجرام
     message += `⚽ <b>${i + 1}. ${news.title}</b>\n`;
     if (summary) {
       message += `📌 <i>${summary}</i>\n`;
