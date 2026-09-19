@@ -85,7 +85,6 @@ function saveSentArticles(articlesSet) {
 
 const sentArticles = loadSentArticles();
 
-// استخراج الرابط المبدئي من الـ RSS
 function extractRssImageUrl(item) {
   if (item.enclosure?.url) return item.enclosure.url;
   if (item.mediaContent?.$?.url) return item.mediaContent.$.url;
@@ -98,7 +97,6 @@ function extractRssImageUrl(item) {
   return DEFAULT_FOOTBALL_IMAGE;
 }
 
-// دالة جلب الصورة الأصلية فائقة الدقة (HD) من كود صفحة الخبر مباشرة
 async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
   try {
     const response = await axios.get(articleUrl, {
@@ -109,30 +107,41 @@ async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
     });
 
     const html = response.data;
-    // استخراج رابط الصورة الرسمية من وسوم Open Graph
     const ogMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
                     html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
 
     if (ogMatch && ogMatch[1]) {
-      let highRes = ogMatch[1].replace(/&amp;/g, '&');
-      return highRes;
+      return ogMatch[1].replace(/&amp;/g, '&');
     }
   } catch {
-    // في حال بطء الصفحة نرجع للرابط الاحتياطي دون تعطيل الإرسال
+    // العودة للرابط الاحتياطي في حال تعذر السحب المباشر
   }
   return fallbackUrl;
 }
 
-async function sendTelegramPhotoCard(photoUrl, caption) {
+// إرسال بطاقة مصورة مزودة بزر تفاعلي أسفل الصورة
+async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
   const photoEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
   const messageEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
+  const inlineKeyboard = {
+    inline_keyboard: [
+      [
+        {
+          text: '🌐 قراءة التفاصيل من المصدر',
+          url: articleUrl
+        }
+      ]
+    ]
+  };
 
   try {
     await axios.post(photoEndpoint, {
       chat_id: CHAT_ID,
       photo: photoUrl,
       caption: caption,
-      parse_mode: 'HTML'
+      parse_mode: 'HTML',
+      reply_markup: inlineKeyboard
     });
   } catch (err) {
     console.error('فشل إرسال بطاقة الصورة، جاري الإرسال كرسالة نصية:', err.response?.data?.description || err.message);
@@ -141,7 +150,8 @@ async function sendTelegramPhotoCard(photoUrl, caption) {
         chat_id: CHAT_ID,
         text: caption,
         parse_mode: 'HTML',
-        disable_web_page_preview: true
+        disable_web_page_preview: true,
+        reply_markup: inlineKeyboard
       });
     } catch (fallbackErr) {
       console.error('فشل الإرسال البديل أيضاً:', fallbackErr.response?.data?.description || fallbackErr.message);
@@ -205,7 +215,7 @@ function classifyAndScore(title) {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار واستخراج الصور فائقة الدقة...`);
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار وتجهيز البطاقات التفاعلية...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -261,20 +271,19 @@ async function run() {
     const news = selectedNews[i];
     sentArticles.add(news.id);
 
-    // سحب الصورة الأصلية فائقة الجودة من الصفحة مباشرة + تلخيص الخبر
     const [highResImage, summary] = await Promise.all([
       fetchHighResImageUrl(news.link, news.rawImageUrl),
       generateAISummary(news.title, news.snippet, news.category)
     ]);
 
+    // وصف نقي ومركز بدون أي روابط نصية طويلة
     let caption = `<b>${news.category} | ${news.title}</b>\n\n`;
     if (summary) {
-      caption += `📌 <i>${summary}</i>\n\n`;
+      caption += `📌 <i>${summary}</i>`;
     }
-    caption += `🔗 <a href="${news.link}">التفاصيل الكاملة عبر المصدر</a>`;
 
-    await sendTelegramPhotoCard(highResImage, caption);
-    console.log(`تم إرسال بطاقة الخبر بدقة HD (${i + 1}/${selectedNews.length}): ${news.title}`);
+    await sendTelegramPhotoCard(highResImage, caption, news.link);
+    console.log(`تم إرسال البطاقة التفاعلية (${i + 1}/${selectedNews.length}): ${news.title}`);
 
     if (i < selectedNews.length - 1) {
       await sleep(1000);
@@ -282,7 +291,7 @@ async function run() {
   }
 
   saveSentArticles(sentArticles);
-  console.log(`اكتمل إرسال جميع البطاقات بنجاح.`);
+  console.log(`اكتمل إرسال جميع البطاقات التفاعلية بنجاح.`);
   process.exit(0);
 }
 
