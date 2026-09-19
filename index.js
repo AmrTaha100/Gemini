@@ -15,11 +15,20 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const MAX_NEWS_AGE_HOURS = 36;
 const DB_FILE = path.resolve('sent_news.json');
 
-// حل أزمة خطأ 406 بإضافة ترويسات قبول الـ RSS والـ XML كاملة
+// صورة افتراضية كروية عالية الجودة في حال غياب صورة الخبر من المصدر
+const DEFAULT_FOOTBALL_IMAGE = 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=1200&q=80';
+
+// تهيئة الـ Parser لاستخراج وسوم الصور والوسائط من الخلاصات
 const parser = new Parser({
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/rss+xml, application/xml, text/xml, */*'
+  },
+  customFields: {
+    item: [
+      ['media:content', 'mediaContent'],
+      ['enclosure', 'enclosure']
+    ]
   }
 });
 
@@ -78,16 +87,44 @@ function saveSentArticles(articlesSet) {
 
 const sentArticles = loadSentArticles();
 
-async function sendTelegramMessage(text) {
+// دالة ذكية للبحث عن رابط الصورة في مختلف حقول الـ RSS
+function extractImageUrl(item) {
+  if (item.enclosure?.url) return item.enclosure.url;
+  if (item.mediaContent?.$?.url) return item.mediaContent.$.url;
+  if (item['media:content']?.$?.url) return item['media:content'].$.url;
+
+  // البحث عن وسم <img> داخل المحتوى أو الوصف
+  const htmlContent = item.content || item.description || '';
+  const imgMatch = htmlContent.match(/<img[^>]+src=["']([^"']+)["']/i);
+  if (imgMatch && imgMatch[1]) return imgMatch[1];
+
+  return DEFAULT_FOOTBALL_IMAGE;
+}
+
+// إرسال الخبر كبطاقة مصورة (Photo + Caption)
+async function sendTelegramPhotoCard(photoUrl, caption) {
+  const photoEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+  const messageEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+
   try {
-    await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    await axios.post(photoEndpoint, {
       chat_id: CHAT_ID,
-      text: text,
-      parse_mode: 'HTML',
-      disable_web_page_preview: false
+      photo: photoUrl,
+      caption: caption,
+      parse_mode: 'HTML'
     });
-  } catch (error) {
-    console.error('خطأ أثناء إرسال تليجرام:', error.response?.data || error.message);
+  } catch (err) {
+    console.error('فشل إرسال الصورة، جاري الإرسال كرسالة نصية بديلة:', err.response?.data?.description || err.message);
+    try {
+      await axios.post(messageEndpoint, {
+        chat_id: CHAT_ID,
+        text: caption,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      });
+    } catch (fallbackErr) {
+      console.error('فشل الإرسال البديل أيضاً:', fallbackErr.response?.data?.description || fallbackErr.message);
+    }
   }
 }
 
@@ -107,7 +144,6 @@ async function generateAISummary(title, snippet, category) {
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
   try {
-    // استخدام النموذج المعتمد رسمياً حالياً
     const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
     const result = await model.generateContent(prompt);
     return result.response.text()?.trim();
@@ -127,12 +163,12 @@ function classifyAndScore(title) {
 
   if (TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) {
     score += 5;
-    category = 'انتقالات';
+    category = 'انتقالات 🔄';
   } else if (RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()))) {
     score += 5;
-    category = 'نتائج ومباريات';
+    category = 'نتائج ومباريات ⚽';
   } else if (FOOTBALL_ENTITIES.some(e => cleanTitle.includes(e.toLowerCase()))) {
-    category = 'أخبار الكرة';
+    category = 'أخبار الكرة ⚽';
     score += 3;
   }
 
@@ -145,8 +181,11 @@ function classifyAndScore(title) {
   return { score, category };
 }
 
+// دالة مساعدة للانتظار لتفادي الـ Rate Limit
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار بالمصادر الجديدة...`);
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار وتجهيز البطاقات المصورة...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -173,8 +212,14 @@ async function run() {
           const analysis = classifyAndScore(title);
           if (analysis) {
             candidates.push({
-              id, title, snippet, link: item.link,
-              score: analysis.score, category: analysis.category, pubDate: articleDate
+              id,
+              title,
+              snippet,
+              link: item.link,
+              imageUrl: extractImageUrl(item),
+              score: analysis.score,
+              category: analysis.category,
+              pubDate: articleDate
             });
           }
         }
@@ -192,23 +237,29 @@ async function run() {
     process.exit(0);
   }
 
-  let message = `🔥 <b>جديد كرة القدم الآن:</b>\n\n`;
-
   for (let i = 0; i < selectedNews.length; i++) {
     const news = selectedNews[i];
     sentArticles.add(news.id);
+
     const summary = await generateAISummary(news.title, news.snippet, news.category);
 
-    message += `⚽ <b>${i + 1}. ${news.title}</b>\n`;
+    let caption = `<b>${news.category} | ${news.title}</b>\n\n`;
     if (summary) {
-      message += `📌 <i>${summary}</i>\n`;
+      caption += `📌 <i>${summary}</i>\n\n`;
     }
-    message += `🔗 <a href="${news.link}">التفاصيل الكاملة</a>\n\n`;
+    caption += `🔗 <a href="${news.link}">التفاصيل الكاملة عبر المصدر</a>`;
+
+    await sendTelegramPhotoCard(news.imageUrl, caption);
+    console.log(`تم إرسال بطاقة الخبر (${i + 1}/${selectedNews.length}): ${news.title}`);
+
+    // فاصل زمني ثانية واحدة بين المنشورات
+    if (i < selectedNews.length - 1) {
+      await sleep(1000);
+    }
   }
 
   saveSentArticles(sentArticles);
-  await sendTelegramMessage(message);
-  console.log(`تم إرسال ${selectedNews.length} أخبار بنجاح.`);
+  console.log(`اكتمل إرسال جميع البطاقات بنجاح.`);
   process.exit(0);
 }
 
