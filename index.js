@@ -34,8 +34,8 @@ const parser = new Parser({
 const RSS_FEEDS = [
   'https://www.france24.com/ar/sport/rss',             // فرانس 24 رياضة
   'https://www.skynewsarabia.com/web/rss/sport.xml',    // سكاي نيوز عربية
-  'https://arabic.rt.com/rss/sport.xml',               // روسيا اليوم بالعربية (RT Arabic)
-  'https://rss.dw.com/xml/rss-ar-sport'                // دويتشه فيله الألمانية بالعربية (DW)
+  'https://www.hespress.com/sport/feed',               // هسبريس رياضة (تغطية دوريات ونجوم)
+  'https://arabic.cnn.com/api/v1/rss/sport/rss.xml'    // سي إن إن بالعربية رياضة
 ];
 
 const BLACKLIST_KEYWORDS = [
