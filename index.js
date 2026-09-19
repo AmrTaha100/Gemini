@@ -30,9 +30,12 @@ const parser = new Parser({
   }
 });
 
+// 4 مصادر كروية عربية موثوقة ومستقرة تماماً للسيرفرات السحابية
 const RSS_FEEDS = [
-  'https://www.france24.com/ar/sport/rss',
-  'https://www.skynewsarabia.com/web/rss/sport.xml'
+  'https://www.france24.com/ar/sport/rss',             // فرانس 24 رياضة
+  'https://www.skynewsarabia.com/web/rss/sport.xml',    // سكاي نيوز عربية
+  'https://arabic.rt.com/rss/sport.xml',               // روسيا اليوم بالعربية (RT Arabic)
+  'https://rss.dw.com/xml/rss-ar-sport'                // دويتشه فيله الألمانية بالعربية (DW)
 ];
 
 const BLACKLIST_KEYWORDS = [
@@ -114,12 +117,11 @@ async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
       return ogMatch[1].replace(/&amp;/g, '&');
     }
   } catch {
-    // العودة للرابط الاحتياطي في حال تعذر السحب المباشر
+    // العودة للرابط البديل فوراً في حال التأخر
   }
   return fallbackUrl;
 }
 
-// إرسال بطاقة مصورة مزودة بزر تفاعلي أسفل الصورة
 async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
   const photoEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
   const messageEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
@@ -215,7 +217,7 @@ function classifyAndScore(title) {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار وتجهيز البطاقات التفاعلية...`);
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار من 4 مصادر دولية وتجهيز البطاقات...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -276,7 +278,6 @@ async function run() {
       generateAISummary(news.title, news.snippet, news.category)
     ]);
 
-    // وصف نقي ومركز بدون أي روابط نصية طويلة
     let caption = `<b>${news.category} | ${news.title}</b>\n\n`;
     if (summary) {
       caption += `📌 <i>${summary}</i>`;
