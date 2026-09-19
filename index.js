@@ -200,6 +200,31 @@ async function generateAISummary(title, snippet, category) {
 المطلوب:
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
+  // الأسماء الرسمية المعتمدة ذات الحصص المرتفعة (1500 طلب يومياً)
+  const modelsToTry = ['gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text()?.trim();
+      if (text) return text;
+    } catch (err) {
+      console.warn(`تعذر التلخيص بنموذج ${modelName} (${err.message.slice(0, 80)}...). جاري المحاولة ببديل...`);
+    }
+  }
+
+  return null;
+}
+  const prompt = `أنت صحفي رياضي خبير بكرة القدم.
+الخبر:
+- التصنيف: ${category}
+- العنوان: ${title}
+- التفاصيل: ${snippet || title}
+
+المطلوب:
+اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
+
   // قائمة نماذج خفيفة بحصص مجانية ضخمة (1500 طلب يومياً) مع تبديل تلقائي
   const modelsToTry = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
