@@ -146,24 +146,33 @@ function classifyAndScore(title) {
   let score = 0;
   let category = '';
 
-  // 2. التحقق من الانتقالات
+  // 2. التحقق من الصفقات والانتقالات
   const isTransfer = TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isTransfer) {
-    score += 4;
+    score += 5;
     category = 'انتقالات 🔄';
   }
 
-  // 3. التحقق من النتائج
+  // 3. التحقق من النتائج ومجريات المباريات
   const isResult = RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isResult) {
-    score += 4;
+    score += 5;
     category = 'نتائج ومباريات ⚽';
   }
 
-  // تجاهل أي خبر غير مصنف كانتصار/مباراة أو صفقة
-  if (!isTransfer && !isResult) return null;
+  // 4. إذا لم يكن نتيجة ولا انتقال صريح، نتحقق من ارتباطه بكرة القدم والأندية الكبرى
+  const matchesFootball = TOP_TEAMS_AND_LEAGUES.some(team => cleanTitle.includes(team.toLowerCase())) ||
+                          cleanTitle.includes('كرة القدم') || cleanTitle.includes('كأس') || cleanTitle.includes('دوري');
 
-  // إعطاء أولوية لأندية الصف الأول
+  if (!category && matchesFootball) {
+    category = 'أخبار الكرة ⚽';
+    score += 2;
+  }
+
+  // إذا لم يكن له أي علاقة بكرة القدم نتجاهله
+  if (!category) return null;
+
+  // دعم الأندية والبطولات الكبرى بنقاط إضافية
   TOP_TEAMS_AND_LEAGUES.forEach(team => {
     if (cleanTitle.includes(team.toLowerCase())) score += 2;
   });
