@@ -14,13 +14,26 @@ const parser = new Parser({
   }
 });
 
-// خلاصات موثوقة مخصصة لكرة القدم العالمية فقط
+// خلاصات متخصصة في الدوريات والبطولات الأوروبية الكبرى فقط
 const RSS_FEEDS = [
-  'https://feeds.bbci.co.uk/sport/football/rss.xml',
-  'https://www.skysports.com/rss/12040' // Sky Sports Football
+  'https://www.skysports.com/rss/11095',            // Sky Sports Premier League
+  'https://www.theguardian.com/football/rss',       // The Guardian Football (تحليلات وأخبار قوية)
+  'https://www.skysports.com/rss/12040'             // Sky Sports Football Top News
 ];
 
-// تخزين المعرفات لتفادي تكرار إرسال نفس الخبر
+// كلمات يتم استبعاد الخبر فوراً إذا احتوى عليها (فواصل، مسابقات، شائعات فرعية)
+const BLACKLIST_KEYWORDS = [
+  'quiz', 'quizzes', 'gossip', 'podcast', 'round-up',
+  'how to watch', 'live text', 'ratings', 'stream', 'anniversary'
+];
+
+// أندية وبطولات تعطي الخبر أولوية قصوى
+const PRIORITY_KEYWORDS = [
+  'champions league', 'premier league', 'la liga', 'real madrid',
+  'barcelona', 'manchester city', 'liverpool', 'arsenal', 'chelsea',
+  'bayern', 'psg', 'transfer', 'official', 'signed', 'injury'
+];
+
 const sentArticles = new Set();
 
 async function sendTelegramMessage(text) {
@@ -37,6 +50,28 @@ async function sendTelegramMessage(text) {
   }
 }
 
+function isHighValueArticle(title) {
+  const lowerTitle = title.toLowerCase();
+
+  // 1. استبعاد أي خبر ترفيهي أو غير إخباري
+  const hasBlacklistedWord = BLACKLIST_KEYWORDS.some(kw => lowerTitle.includes(kw));
+  if (hasBlacklistedWord) return false;
+
+  return true;
+}
+
+function calculateScore(title) {
+  const lowerTitle = title.toLowerCase();
+  let score = 0;
+
+  // إعطاء نقاط أعلى للأندية والبطولات الكبرى والأحداث المؤكدة
+  PRIORITY_KEYWORDS.forEach(kw => {
+    if (lowerTitle.includes(kw)) score += 2;
+  });
+
+  return score;
+}
+
 async function fetchTopFootballNews() {
   const candidates = [];
 
@@ -46,11 +81,15 @@ async function fetchTopFootballNews() {
       
       for (const item of feed.items) {
         const id = item.guid || item.link;
-        if (!sentArticles.has(id)) {
+        const title = item.title?.trim() || '';
+
+        // التحقق من أن الخبر جديد ويجتاز معايير الأهمية
+        if (!sentArticles.has(id) && isHighValueArticle(title)) {
           candidates.push({
             id: id,
-            title: item.title?.trim(),
+            title: title,
             link: item.link,
+            score: calculateScore(title),
             pubDate: new Date(item.pubDate || Date.now())
           });
         }
@@ -60,40 +99,43 @@ async function fetchTopFootballNews() {
     }
   }
 
-  // ترتيب الأخبار من الأحدث للأقدم
-  candidates.sort((a, b) => b.pubDate - a.pubDate);
+  // الترتيب حسب: الأهمية أولاً (الأندية والبطولات الكبرى)، ثم التوقيت
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    return b.pubDate - a.pubDate;
+  });
 
-  // اختيار أول 3 أخبار جديدة غير مكررة
   return candidates.slice(0, 3);
 }
 
 async function runNewsJob() {
-  console.log(`[${new Date().toISOString()}] بدء جلب أخبار كرة القدم...`);
+  console.log(`[${new Date().toISOString()}] جاري فحص واختيار أهم 3 أخبار...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
-    console.error('تأكد من ضبط TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID في المتغيرات البيئية.');
+    console.error('تأكد من ضبط متغيرات البيئة.');
     return;
   }
 
   const selectedNews = await fetchTopFootballNews();
 
   if (selectedNews.length === 0) {
-    console.log('لا توجد أخبار جديدة في هذه الساعة.');
+    console.log('لا توجد أخبار جديدة تنطبق عليها معايير الأهمية حالياً.');
     return;
   }
 
-  let message = `⚽ <b>أهم أخبار كرة القدم الآن:</b>\n\n`;
+  let message = `⚽ <b>أهم 3 أخبار كرة قدم حالياً:</b>\n\n`;
 
   selectedNews.forEach((news, index) => {
     sentArticles.add(news.id);
     message += `<b>${index + 1}. ${news.title}</b>\n`;
-    message += `🔗 <a href="${news.link}">قراءة الخبر كاملاً</a>\n\n`;
+    message += `🔗 <a href="${news.link}">قراءة التفاصيل</a>\n\n`;
   });
 
   await sendTelegramMessage(message);
-  console.log('تم إرسال 3 أخبار بنجاح إلى تليجرام.');
+  console.log('تم الإرسال بنجاح.');
 
-  // تنظيف الذاكرة إذا زادت الأخبار المحفوظة عن 200 لمنع تسريب الذاكرة
   if (sentArticles.size > 200) {
     const arr = Array.from(sentArticles);
     arr.splice(0, 100);
@@ -102,12 +144,8 @@ async function runNewsJob() {
   }
 }
 
-// تشغيل الفحص فور بدء السيرفر للتأكد من عمله
 runNewsJob();
 
-// الجدولة: تشغيل المهمة كل ساعة عند الدقيقة 0
 cron.schedule('0 * * * *', () => {
   runNewsJob();
 });
-
-console.log('البوت قيد التشغيل ومجدول ليعمل كل ساعة.');
