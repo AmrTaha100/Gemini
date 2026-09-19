@@ -200,14 +200,22 @@ async function generateAISummary(title, snippet, category) {
 المطلوب:
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
-  try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
-    const result = await model.generateContent(prompt);
-    return result.response.text()?.trim();
-  } catch (err) {
-    console.error('خطأ أثناء التلخيص:', err.message);
-    return null;
+  // قائمة نماذج خفيفة بحصص مجانية ضخمة (1500 طلب يومياً) مع تبديل تلقائي
+  const modelsToTry = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text()?.trim();
+      if (text) return text;
+    } catch (err) {
+      // في حال وجود ضغط على النموذج، تتم تجربة النموذج التالي
+      console.warn(`تعذر التلخيص بنموذج ${modelName} (${err.message.slice(0, 80)}...). جاري المحاولة ببديل...`);
+    }
   }
+
+  return null;
 }
 
 function classifyAndScore(title) {
