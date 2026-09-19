@@ -8,7 +8,6 @@ dotenv.config();
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// الحد الأقصى لعمر الخبر بالساعات (مثلاً أخبار آخر 24 ساعة فقط)
 const MAX_NEWS_AGE_HOURS = 24;
 
 const parser = new Parser({
@@ -17,26 +16,32 @@ const parser = new Parser({
   }
 });
 
-// مصادر إخبارية عربية موثوقة
 const RSS_FEEDS = [
   'https://feeds.bbci.co.uk/arabic/sport/rss.xml',
   'https://www.skynewsarabia.com/web/rss/sport.xml',
   'https://arabic.rt.com/rss/sport/'
 ];
 
-// استبعاد الرياضات الأخرى والمحتوى غير المناسب
+// كلمات استبعاد صارمة للأخبار السياسية، الحوادث، والرياضات الأخرى
 const BLACKLIST_KEYWORDS = [
+  // حوادث وأخبار عامة (لمنع تسرب الأخبار العاجلة السياسية)
+  'مقتل', 'قتلى', 'ضحايا', 'انفجار', 'حادث', 'اغتيال', 'صاروخ', 
+  'غارة', 'قصف', 'شرطة', 'جيش', 'مسجد', 'زلزال', 'حريق', 'محاكمة',
+  // رياضات أخرى
   'كرة السلة', 'كرة سلة', 'تنس', 'كرة اليد', 'كرة يد', 'كرة الطائرة',
   'فورمولا', 'سباق', 'ملاكمة', 'مصارعة', 'جودو', 'سباحة', 'ألعاب قوى',
+  // محتوى غير مناسب
   'بث مباشر', 'مشاهدة مباراة', 'كويز', 'بودكاست', 'كاريكاتير'
 ];
 
-// كلمات تدل على كرة القدم
+// كلمات مخصصة لكرة القدم حصراً
 const FOOTBALL_KEYWORDS = [
-  'كرة القدم', 'دوري', 'كأس', 'أبطال', 'ريال مدريد', 'برشلونة',
-  'مانشستر سيتي', 'ليفربول', 'أرسنال', 'تشيلسي', 'بايرن ميونخ',
-  'باريس سان جيرمان', 'مدرب', 'لاعب', 'صفقة', 'انتقال', 'إصابة',
-  'فيفا', 'يويفا', 'البريميرليغ', 'الليغا', 'الكالتشيو'
+  'كرة القدم', 'دوري أبطال', 'الدوري الإنجليزي', 'الدوري الإسباني', 'الدوري الإيطالي',
+  'الدوري الألماني', 'الدوري الفرنسي', 'البريميرليغ', 'الليغا', 'الكالتشيو', 'البوندسليغا',
+  'كأس العالم', 'ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 'أرسنال', 'تشيلسي',
+  'مانشستر يونايتد', 'بايرن ميونخ', 'باريس سان جيرمان', 'يوفنتوس', 'إنتر ميلان',
+  'فيفا', 'يويفا', 'الكرة الذهبية', 'هاتريك', 'ركلة جزاء', 'سوق الانتقالات',
+  'مبابي', 'فينيسيوس', 'هالاند', 'صلاح', 'ميسي', 'رونالدو', 'لامين جمال', 'هاري كين'
 ];
 
 const sentArticles = new Set();
@@ -58,17 +63,24 @@ async function sendTelegramMessage(text) {
 function isValidFootballNews(title) {
   const cleanTitle = title.toLowerCase();
 
+  // 1. استبعاد فوري إذا وُجدت أي كلمة سياسية أو حادث أو رياضة أخرى
   const hasBlacklisted = BLACKLIST_KEYWORDS.some(word => cleanTitle.includes(word.toLowerCase()));
   if (hasBlacklisted) return false;
 
-  return FOOTBALL_KEYWORDS.some(word => cleanTitle.includes(word.toLowerCase()));
+  // 2. التحقق من وجود كلمة كرة قدم صريحة لا تحتمل اللبس
+  const isFootball = FOOTBALL_KEYWORDS.some(word => cleanTitle.includes(word.toLowerCase()));
+  return isFootball;
 }
 
 function calculateScore(title) {
   const cleanTitle = title.toLowerCase();
   let score = 0;
 
-  const priorityTerms = ['ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 'أرسنال', 'دوري أبطال', 'صفقة', 'رسمياً'];
+  const priorityTerms = [
+    'ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 
+    'دوري أبطال', 'الكرة الذهبية', 'رسمياً', 'صفقة'
+  ];
+
   priorityTerms.forEach(term => {
     if (cleanTitle.includes(term.toLowerCase())) score += 2;
   });
@@ -89,15 +101,12 @@ async function fetchTopFootballNews() {
         const title = item.title?.trim() || '';
         const articleDate = new Date(item.pubDate || item.isoDate || now);
         
-        // حساب عمر الخبر بالساعات
         const ageInHours = (now - articleDate.getTime()) / (1000 * 60 * 60);
 
-        // 1. استبعاد أي خبر أقدم من 24 ساعة
         if (ageInHours > MAX_NEWS_AGE_HOURS) {
           continue;
         }
 
-        // 2. التحقق من عدم إرساله مسبقاً وتوافقه مع معايير كرة القدم
         if (!sentArticles.has(id) && isValidFootballNews(title)) {
           candidates.push({
             id: id,
@@ -113,14 +122,11 @@ async function fetchTopFootballNews() {
     }
   }
 
-  // الترتيب: الأحدث أولاً، وإذا تساوى الوقت تقريباً يتم تقديم الأخبار الأهم
   candidates.sort((a, b) => {
-    // إذا كان فارق التوقيت كبيراً (أكثر من ساعتين)، فالأحدث له الأولوية
     const timeDiffHours = (b.pubDate - a.pubDate) / (1000 * 60 * 60);
     if (Math.abs(timeDiffHours) >= 2) {
       return b.pubDate - a.pubDate;
     }
-    // إذا كانت الأخبار متقاربة زمنياً، يتم الاعتماد على قوة الخبر
     if (b.score !== a.score) {
       return b.score - a.score;
     }
@@ -131,7 +137,7 @@ async function fetchTopFootballNews() {
 }
 
 async function runNewsJob() {
-  console.log(`[${new Date().toISOString()}] جاري فحص أهم وأحدث أخبار كرة القدم...`);
+  console.log(`[${new Date().toISOString()}] جاري فحص الأخبار بالفلترة الصارمة...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('تأكد من ضبط المتغيرات البيئية.');
@@ -141,7 +147,7 @@ async function runNewsJob() {
   const selectedNews = await fetchTopFootballNews();
 
   if (selectedNews.length === 0) {
-    console.log('لا توجد أخبار جديدة خلال الـ 24 ساعة الماضية.');
+    console.log('لا توجد أخبار جديدة مطابقة للشروط حالياً.');
     return;
   }
 
@@ -154,7 +160,7 @@ async function runNewsJob() {
   });
 
   await sendTelegramMessage(message);
-  console.log('تم إرسال الأخبار الحديثة بنجاح.');
+  console.log('تم الإرسال بنجاح.');
 
   if (sentArticles.size > 200) {
     const arr = Array.from(sentArticles);
@@ -164,10 +170,8 @@ async function runNewsJob() {
   }
 }
 
-// تشغيل عند بدء التشغيل
 runNewsJob();
 
-// تكرار كل ساعة
 cron.schedule('0 * * * *', () => {
   runNewsJob();
 });
