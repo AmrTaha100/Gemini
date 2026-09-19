@@ -15,10 +15,8 @@ const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const MAX_NEWS_AGE_HOURS = 36;
 const DB_FILE = path.resolve('sent_news.json');
 
-// صورة افتراضية كروية عالية الجودة في حال غياب صورة الخبر من المصدر
 const DEFAULT_FOOTBALL_IMAGE = 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=1200&q=80';
 
-// تهيئة الـ Parser لاستخراج وسوم الصور والوسائط من الخلاصات
 const parser = new Parser({
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -87,13 +85,12 @@ function saveSentArticles(articlesSet) {
 
 const sentArticles = loadSentArticles();
 
-// دالة ذكية للبحث عن رابط الصورة في مختلف حقول الـ RSS
-function extractImageUrl(item) {
+// استخراج الرابط المبدئي من الـ RSS
+function extractRssImageUrl(item) {
   if (item.enclosure?.url) return item.enclosure.url;
   if (item.mediaContent?.$?.url) return item.mediaContent.$.url;
   if (item['media:content']?.$?.url) return item['media:content'].$.url;
 
-  // البحث عن وسم <img> داخل المحتوى أو الوصف
   const htmlContent = item.content || item.description || '';
   const imgMatch = htmlContent.match(/<img[^>]+src=["']([^"']+)["']/i);
   if (imgMatch && imgMatch[1]) return imgMatch[1];
@@ -101,7 +98,31 @@ function extractImageUrl(item) {
   return DEFAULT_FOOTBALL_IMAGE;
 }
 
-// إرسال الخبر كبطاقة مصورة (Photo + Caption)
+// دالة جلب الصورة الأصلية فائقة الدقة (HD) من كود صفحة الخبر مباشرة
+async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
+  try {
+    const response = await axios.get(articleUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 3500
+    });
+
+    const html = response.data;
+    // استخراج رابط الصورة الرسمية من وسوم Open Graph
+    const ogMatch = html.match(/<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i) ||
+                    html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i);
+
+    if (ogMatch && ogMatch[1]) {
+      let highRes = ogMatch[1].replace(/&amp;/g, '&');
+      return highRes;
+    }
+  } catch {
+    // في حال بطء الصفحة نرجع للرابط الاحتياطي دون تعطيل الإرسال
+  }
+  return fallbackUrl;
+}
+
 async function sendTelegramPhotoCard(photoUrl, caption) {
   const photoEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
   const messageEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
@@ -114,7 +135,7 @@ async function sendTelegramPhotoCard(photoUrl, caption) {
       parse_mode: 'HTML'
     });
   } catch (err) {
-    console.error('فشل إرسال الصورة، جاري الإرسال كرسالة نصية بديلة:', err.response?.data?.description || err.message);
+    console.error('فشل إرسال بطاقة الصورة، جاري الإرسال كرسالة نصية:', err.response?.data?.description || err.message);
     try {
       await axios.post(messageEndpoint, {
         chat_id: CHAT_ID,
@@ -181,11 +202,10 @@ function classifyAndScore(title) {
   return { score, category };
 }
 
-// دالة مساعدة للانتظار لتفادي الـ Rate Limit
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار وتجهيز البطاقات المصورة...`);
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار واستخراج الصور فائقة الدقة...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -216,7 +236,7 @@ async function run() {
               title,
               snippet,
               link: item.link,
-              imageUrl: extractImageUrl(item),
+              rawImageUrl: extractRssImageUrl(item),
               score: analysis.score,
               category: analysis.category,
               pubDate: articleDate
@@ -241,7 +261,11 @@ async function run() {
     const news = selectedNews[i];
     sentArticles.add(news.id);
 
-    const summary = await generateAISummary(news.title, news.snippet, news.category);
+    // سحب الصورة الأصلية فائقة الجودة من الصفحة مباشرة + تلخيص الخبر
+    const [highResImage, summary] = await Promise.all([
+      fetchHighResImageUrl(news.link, news.rawImageUrl),
+      generateAISummary(news.title, news.snippet, news.category)
+    ]);
 
     let caption = `<b>${news.category} | ${news.title}</b>\n\n`;
     if (summary) {
@@ -249,10 +273,9 @@ async function run() {
     }
     caption += `🔗 <a href="${news.link}">التفاصيل الكاملة عبر المصدر</a>`;
 
-    await sendTelegramPhotoCard(news.imageUrl, caption);
-    console.log(`تم إرسال بطاقة الخبر (${i + 1}/${selectedNews.length}): ${news.title}`);
+    await sendTelegramPhotoCard(highResImage, caption);
+    console.log(`تم إرسال بطاقة الخبر بدقة HD (${i + 1}/${selectedNews.length}): ${news.title}`);
 
-    // فاصل زمني ثانية واحدة بين المنشورات
     if (i < selectedNews.length - 1) {
       await sleep(1000);
     }
