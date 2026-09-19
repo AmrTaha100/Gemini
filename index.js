@@ -140,7 +140,7 @@ function classifyAndScore(title) {
 }
 
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار...`);
+  console.log(`[${new Date().toISOString()}] --- بدء سحب وفحص العناوين المتاحة حالياً ---`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -152,23 +152,44 @@ async function run() {
 
   for (const feedUrl of RSS_FEEDS) {
     try {
+      console.log(`\n📡 جاري جلب الأخبار من: ${feedUrl}`);
       const feed = await parser.parseURL(feedUrl);
+      console.log(`إجمالي الأخبار المستلمة من المصدر: ${feed.items.length}\n`);
+
       for (const item of feed.items) {
         const id = item.guid || item.link;
         const title = item.title?.trim() || '';
         const snippet = item.contentSnippet?.trim() || item.content?.trim() || '';
         const articleDate = new Date(item.pubDate || item.isoDate || now);
         
-        if ((now - articleDate.getTime()) / (1000 * 60 * 60) > MAX_NEWS_AGE_HOURS) continue;
+        const ageInHours = ((now - articleDate.getTime()) / (1000 * 60 * 60)).toFixed(1);
 
-        if (!sentArticles.has(id)) {
-          const analysis = classifyAndScore(title);
-          if (analysis) {
-            candidates.push({
-              id, title, snippet, link: item.link,
-              score: analysis.score, category: analysis.category, pubDate: articleDate
-            });
-          }
+        console.log(`----------------------------------------`);
+        console.log(`📰 العنوان: ${title}`);
+        console.log(`⏰ عمر الخبر: ${ageInHours} ساعة`);
+
+        // 1. فحص التكرار
+        if (sentArticles.has(id)) {
+          console.log(`❌ تم تجاهله: الخبر مرسل مسبقاً.`);
+          continue;
+        }
+
+        // 2. فحص العمر الزمني
+        if (ageInHours > MAX_NEWS_AGE_HOURS) {
+          console.log(`❌ تم تجاهله: الخبر أقدم من 24 ساعة.`);
+          continue;
+        }
+
+        // 3. فحص التصنيف والكلمات المفتاحية
+        const analysis = classifyAndScore(title);
+        if (!analysis) {
+          console.log(`❌ تم تجاهله: لم يطابق شروط النتائج/الانتقالات أو يحتوي على كلمات محظورة.`);
+        } else {
+          console.log(`✅ مطابق للشروط! الفئة: [${analysis.category}] - النقاط: ${analysis.score}`);
+          candidates.push({
+            id, title, snippet, link: item.link,
+            score: analysis.score, category: analysis.category, pubDate: articleDate
+          });
         }
       }
     } catch (err) {
@@ -176,16 +197,18 @@ async function run() {
     }
   }
 
+  console.log(`\n========================================`);
+  console.log(`📊 إجمالي الأخبار المطابقة بعد الفلترة: ${candidates.length}`);
+  console.log(`========================================\n`);
+
   candidates.sort((a, b) => b.score !== a.score ? b.score - a.score : b.pubDate - a.pubDate);
   const selectedNews = candidates.slice(0, 3);
 
-  // إذا لم يجد أخباراً تطابق الشروط، يغلق الكود فوراً ويتوقف تماماً
   if (selectedNews.length === 0) {
-    console.log('لا توجد أخبار جديدة ومهمة. إيقاف التشغيل فوراً.');
+    console.log('لا توجد أخبار جديدة ومهمة للإرسال. إنهاء العملية.');
     process.exit(0);
   }
 
-  // إذا وجد أخباراً، يلخصها ويرسلها ثم يغلق الكود فوراً
   let message = `🔥 <b>جديد الانتقالات ونتائج الكرة:</b>\n\n`;
 
   for (let i = 0; i < selectedNews.length; i++) {
@@ -201,8 +224,6 @@ async function run() {
   saveSentArticles(sentArticles);
   await sendTelegramMessage(message);
   console.log(`تم الإرسال بنجاح. إنهاء العملية.`);
-
-  // إيقاف الكود والخروج التام من النظام
   process.exit(0);
 }
 
