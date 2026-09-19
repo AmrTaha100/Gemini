@@ -25,9 +25,9 @@ const parser = new Parser({
 
 // مصادر رياضية متخصصة ومستقرة تماماً
 const RSS_FEEDS = [
-  'https://www.filgoal.com/rss/all',                       // FilGoal - أسرع مصدر كروي عربي
-  'https://www.france24.com/ar/sport/rss',                 // فرانس 24 - رياضة حصرية
-  'https://www.skynewsarabia.com/web/rss/sport.xml'        // سكاي نيوز عربية
+  'https://www.france24.com/ar/sport/rss',                                 // فرانس 24 رياضة
+  'https://arabic.euronews.com/rss?format=mrss&level=theme&name=sport',   // يورونيوز رياضة
+  'https://www.skynewsarabia.com/web/rss/sport.xml'                        // سكاي نيوز
 ];
 
 const BLACKLIST_KEYWORDS = [
@@ -105,14 +105,22 @@ async function generateAISummary(title, snippet, category) {
 المطلوب:
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون مقدمات.`;
 
-  try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-    const result = await model.generateContent(prompt);
-    return result.response.text()?.trim();
-  } catch (err) {
-    console.error('فشل التلخيص:', err.message);
-    return null;
+  // تجربة النماذج الحديثة بالتتابع لضمان استقرار التلخيص دائماً
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      return result.response.text()?.trim();
+    } catch (err) {
+      // تجربة الموديل التالي في حال عدم التوفر
+      continue;
+    }
   }
+
+  console.error('تعذر توليد التلخيص عبر النماذج المتاحة.');
+  return null;
 }
 
 function classifyAndScore(title) {
@@ -205,15 +213,18 @@ async function run() {
     process.exit(0);
   }
 
-  let message = `🔥 <b>جديد الانتقالات ونتائج الكرة:</b>\n\n`;
+  let message = `🔥 <b>جديد كرة القدم الآن:</b>\n\n`;
 
   for (let i = 0; i < selectedNews.length; i++) {
     const news = selectedNews[i];
     sentArticles.add(news.id);
     const summary = await generateAISummary(news.title, news.snippet, news.category);
 
-    message += `<b>${i + 1}. [${news.category}] ${news.title}</b>\n`;
-    if (summary) message += `📌 <i>${summary}</i>\n`;
+    // تنسيق نظيف بدون أي أقواس لتجنب تشويه الاتجاهات في تليجرام
+    message += `⚽ <b>${i + 1}. ${news.title}</b>\n`;
+    if (summary) {
+      message += `📌 <i>${summary}</i>\n`;
+    }
     message += `🔗 <a href="${news.link}">التفاصيل الكاملة</a>\n\n`;
   }
 
