@@ -4,7 +4,7 @@ import axios from 'axios';
 import Parser from 'rss-parser';
 import cron from 'node-cron';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
@@ -12,9 +12,11 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+// إعداد نموذج الذكاء الاصطناعي
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
-const MAX_NEWS_AGE_HOURS = 36;
+// الحد الأقصى لعمر الخبر (24 ساعة لضمان تغطية نتائج ومباريات اليوم السابق)
+const MAX_NEWS_AGE_HOURS = 24;
 const DB_FILE = path.resolve('sent_news.json');
 
 const parser = new Parser({
@@ -23,23 +25,29 @@ const parser = new Parser({
   }
 });
 
-// خلاصات موثوقة ونظيفة
+// خلاصات موثوقة ومخصصة للرياضة فقط (تم استبعاد المصادر التي تخلط السياسة)
 const RSS_FEEDS = [
   'https://feeds.bbci.co.uk/arabic/sport/rss.xml',
   'https://www.skynewsarabia.com/web/rss/sport.xml'
 ];
 
-// استبعاد الأخبار السياسية والاقتصادية والحوادث
+// قائمة استبعاد شاملة للشؤون السياسية والاقتصادية والرياضات الأخرى
 const BLACKLIST_KEYWORDS = [
+  // اقتصاد وسياسة وحروب لمنع أي تسرب إخباري
   'نفط', 'أسعار النفط', 'اقتصاد', 'بورصة', 'أسهم', 'دولار', 'تضخم',
   'مورغان', 'ترامب', 'بايدن', 'بوتين', 'إيران', 'حرب', 'صاروخ', 'قصف',
   'غارة', 'مقتل', 'قتلى', 'ضحايا', 'انفجار', 'حادث', 'اغتيال', 'شرطة',
   'جيش', 'مسجد', 'زلزال', 'حريق', 'محاكمة', 'انتخابات', 'حكومة', 'رئيس الوزراء',
+  
+  // رياضات أخرى للتأكد من حصرية كرة القدم
   'كرة السلة', 'كرة سلة', 'تنس', 'كرة اليد', 'كرة يد', 'كرة الطائرة',
   'فورمولا', 'سباق', 'ملاكمة', 'مصارعة', 'جودو', 'سباحة', 'ألعاب قوى',
+  
+  // محتوى تفاعلي وبثوث
   'بث مباشر', 'مشاهدة مباراة', 'كويز', 'بودكاست'
 ];
 
+// عبارات صريحة للانتقالات (تجنب الكلمات المفردة مثل "وقع" لمنع تشابهها مع "توقع")
 const TRANSFER_KEYWORDS = [
   'صفقة', 'صفقات', 'انتقال', 'انتقالات', 'ميركاتو', 'تعاقد', 'يتعاقد',
   'وقع مع', 'يوقع مع', 'وقع رسمياً', 'يوقع رسمياً', 'توقيع عقد', 'عقد جديد',
@@ -47,12 +55,14 @@ const TRANSFER_KEYWORDS = [
   'مفاوضات لضم', 'سوق الانتقالات'
 ];
 
+// نتائج ومجريات المباريات
 const RESULTS_KEYWORDS = [
   'فوز', 'يفوز', 'انتصار', 'هزيمة', 'يسحق', 'يكتسح', 'يتعادل', 'تعادل',
   'أهداف', 'هدف', 'هاتريك', 'ثنائية', 'ركلات ترجيح', 'ريمونتادا',
   'يتأهل', 'تأهل', 'يقصي', 'صدارة', 'ترتيب الدوري', 'نهائي', 'نصف نهائي'
 ];
 
+// أندية وبطولات كبرى
 const TOP_TEAMS_AND_LEAGUES = [
   'ريال مدريد', 'برشلونة', 'مانشستر سيتي', 'ليفربول', 'أرسنال', 
   'مانشستر يونايتد', 'تشيلسي', 'بايرن ميونخ', 'باريس سان جيرمان',
@@ -60,7 +70,7 @@ const TOP_TEAMS_AND_LEAGUES = [
   'دوري أبطال أوروبا', 'البريميرليغ', 'الليغا', 'الدوري الإنجليزي', 'الدوري الإسباني'
 ];
 
-// تحميل الأخبار المرسلة سابقاً من الملف المحلي لمنع التكرار نهائياً
+// قراءة الأخبار المرسلة سابقاً من ملف محلي لمنع التكرار نهائياً
 function loadSentArticles() {
   try {
     if (fs.existsSync(DB_FILE)) {
@@ -73,7 +83,7 @@ function loadSentArticles() {
   return new Set();
 }
 
-// حفظ المعرفات في الملف المحلي
+// حفظ الأخبار المرسلة في الملف
 function saveSentArticles(articlesSet) {
   try {
     const list = Array.from(articlesSet);
@@ -100,7 +110,7 @@ async function sendTelegramMessage(text) {
   }
 }
 
-// تلخيص تفاصيل الخبر كروياً باستخدام Gemini API
+// تلخيص تفاصيل الخبر كروياً باستخدام Gemini
 async function generateAISummary(title, snippet, category) {
   if (!GEMINI_API_KEY) return null;
 
@@ -111,17 +121,15 @@ async function generateAISummary(title, snippet, category) {
 - التفاصيل المتوفرة: ${snippet || title}
 
 المطلوب:
-اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة:
-- إذا كان انتقالاً: اذكر اللاعب، الناديين، وتفاصيل العقد/المبلغ المالي إن وجدت.
+اكتب ملخصاً دقيقاً ومكثفاً في سطرين فقط باللغة العربية لعشاق الكرة:
+- إذا كان انتقالاً: اذكر اسم اللاعب، الناديين، وتفاصيل العقد أو المبلغ المالي إن وجدت.
 - إذا كانت مباراة: اذكر النتيجة النهائية، مسجلي الأهداف أو النقطة المفصلية.
-- اكتب الملخص مباشرة دون أي مقدمات أو علامات ترحيب.`;
+- ادخل في الملخص مباشرة دون أي مقدمات أو تحيات.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt
-    });
-    return response.text?.trim();
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent(prompt);
+    return result.response.text()?.trim();
   } catch (err) {
     console.error('فشل التلخيص بالذكاء الاصطناعي:', err.message);
     return null;
@@ -131,26 +139,31 @@ async function generateAISummary(title, snippet, category) {
 function classifyAndScore(title) {
   const cleanTitle = title.toLowerCase();
 
+  // 1. استبعاد الأخبار السياسية والاقتصادية والرياضات الأخرى
   const isBlacklisted = BLACKLIST_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isBlacklisted) return null;
 
   let score = 0;
   let category = '';
 
+  // 2. التحقق من الانتقالات
   const isTransfer = TRANSFER_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isTransfer) {
     score += 4;
     category = 'انتقالات 🔄';
   }
 
+  // 3. التحقق من النتائج
   const isResult = RESULTS_KEYWORDS.some(w => cleanTitle.includes(w.toLowerCase()));
   if (isResult) {
     score += 4;
     category = 'نتائج ومباريات ⚽';
   }
 
+  // تجاهل أي خبر غير مصنف كانتصار/مباراة أو صفقة
   if (!isTransfer && !isResult) return null;
 
+  // إعطاء أولوية لأندية الصف الأول
   TOP_TEAMS_AND_LEAGUES.forEach(team => {
     if (cleanTitle.includes(team.toLowerCase())) score += 2;
   });
@@ -195,6 +208,7 @@ async function fetchTopFootballNews() {
     }
   }
 
+  // الترتيب: الأحدث أولاً، مع ترجيح الأخبار ذات النقاط الأعلى
   candidates.sort((a, b) => {
     const timeDiffHours = (b.pubDate - a.pubDate) / (1000 * 60 * 60);
     if (Math.abs(timeDiffHours) >= 2) return b.pubDate - a.pubDate;
@@ -215,7 +229,7 @@ async function runNewsJob() {
   const selectedNews = await fetchTopFootballNews();
 
   if (selectedNews.length === 0) {
-    console.log('لا توجد صفقات أو نتائج جديدة لإرسالها.');
+    console.log('لا توجد صفقات أو نتائج جديدة لإرسالها في هذه الدورة.');
     return;
   }
 
@@ -225,7 +239,7 @@ async function runNewsJob() {
     const news = selectedNews[i];
     sentArticles.add(news.id);
 
-    // تلخيص الخبر عبر الذكاء الاصطناعي
+    // إنشاء ملخص مركز باستخدام Gemini
     const summary = await generateAISummary(news.title, news.snippet, news.category);
 
     message += `<b>${i + 1}. [${news.category}] ${news.title}</b>\n`;
@@ -235,15 +249,17 @@ async function runNewsJob() {
     message += `🔗 <a href="${news.link}">التفاصيل الكاملة</a>\n\n`;
   }
 
-  // حفظ المعرفات في ملف JSON بشكل دائم
+  // حفظ المعرفات لتفادي التكرار بعد إعادة التشغيل
   saveSentArticles(sentArticles);
 
   await sendTelegramMessage(message);
   console.log(`تم إرسال وتلخيص ${selectedNews.length} أخبار بنجاح.`);
 }
 
+// تشغيل فوري للتأكد من عمل البوت
 runNewsJob();
 
+// الجدولة كل ساعة
 cron.schedule('0 * * * *', () => {
   runNewsJob();
 });
