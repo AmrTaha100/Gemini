@@ -25,7 +25,6 @@ const parser = new Parser({
 
 const RSS_FEEDS = [
   'https://www.france24.com/ar/sport/rss',
-  'https://arabic.euronews.com/rss?format=mrss&level=theme&name=sport',
   'https://www.skynewsarabia.com/web/rss/sport.xml'
 ];
 
@@ -94,7 +93,7 @@ async function sendTelegramMessage(text) {
 
 async function generateAISummary(title, snippet, category) {
   if (!GEMINI_API_KEY) {
-    console.error('مفتاح GEMINI_API_KEY غير موجود في متغيرات البيئة.');
+    console.error('مفتاح GEMINI_API_KEY غير متوفر.');
     return null;
   }
 
@@ -107,19 +106,15 @@ async function generateAISummary(title, snippet, category) {
 المطلوب:
 اكتب ملخصاً دقيقاً في سطرين فقط باللغة العربية لعشاق الكرة (اللاعب/الناديين/المبلغ إن وجد، أو النتيجة ومسجلي الأهداف). ابدأ فوراً دون أي مقدمات أو ترحيب.`;
 
-  // الأسماء الرسمية الأكثر استقراراً في Gemini API
-  const modelsToTry = ['gemini-2.0-flash', 'gemini-1.5-flash-latest'];
-
-  for (const modelName of modelsToTry) {
-    try {
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      return result.response.text()?.trim();
-    } catch (err) {
-      console.error(`خطأ مع النموذج [${modelName}]:`, err.message);
-    }
+  try {
+    // استخدام النموذج المعتمد رسمياً حالياً
+    const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
+    const result = await model.generateContent(prompt);
+    return result.response.text()?.trim();
+  } catch (err) {
+    console.error('خطأ أثناء التلخيص:', err.message);
+    return null;
   }
-  return null;
 }
 
 function classifyAndScore(title) {
