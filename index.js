@@ -106,8 +106,6 @@ function matchKeyword(normalizedText, rawKeyword) {
   return regex.test(normalizedText);
 }
 
-// ---------------------------------------------------------------------
-// الخوارزمية الجديدة: استخراج الكلمات المفتاحية من العنوان والمقتطف معاً
 function getTextKeywords(title, snippet = '') {
   const text = `${title} ${snippet}`;
   if (!text.trim()) return new Set();
@@ -117,7 +115,6 @@ function getTextKeywords(title, snippet = '') {
   );
 }
 
-// الخوارزمية الجديدة: التقييم المزدوج (العناوين أولاً، ثم النص الكامل) بمعامل Dice
 function isContentSimilar(titleA, snippetA, titleB, snippetB) {
   if (!titleA || !titleB) return false;
 
@@ -129,11 +126,9 @@ function isContentSimilar(titleA, snippetA, titleB, snippetB) {
     if (titleSetB.has(word)) titleCommon++;
   }
 
-  // 1. فحص العناوين بمعامل دايس: (2 * الكلمات المشتركة) / (مجموع الكلمات)
   const titleDice = (2 * titleCommon) / (titleSetA.size + titleSetB.size || 1);
-  if (titleDice >= 0.65) return true; // لو العناوين متطابقة بنسبة 65%، فهو نفس الخبر
+  if (titleDice >= 0.65) return true; 
 
-  // 2. إذا لم تتطابق العناوين بقوة، نفحص المحتوى الشامل (العنوان + التفاصيل)
   const fullSetA = getTextKeywords(titleA, snippetA);
   const fullSetB = getTextKeywords(titleB, snippetB);
 
@@ -143,9 +138,8 @@ function isContentSimilar(titleA, snippetA, titleB, snippetB) {
   }
 
   const fullDice = (2 * fullCommon) / (fullSetA.size + fullSetB.size || 1);
-  return fullDice >= 0.55; // تطابق 55% في السياق الكامل يعني أنه نفس الموضوع
+  return fullDice >= 0.55; 
 }
-// ---------------------------------------------------------------------
 
 function escapeHtml(text) {
   if (!text) return '';
@@ -195,7 +189,6 @@ function saveSentArticles(articlesList) {
 const sentArticles = loadSentArticles();
 const sentIdsSet = new Set(sentArticles.map(a => a.id));
 
-// تمرير التفاصيل (snippet) لدالة الفحص التاريخية
 function isNewsAlreadySent(id, title, snippet) {
   if (sentIdsSet.has(id)) return true;
   const recentItems = sentArticles.slice(-60);
@@ -275,7 +268,8 @@ async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
       photo: photoUrl,
       caption: caption,
       parse_mode: 'HTML',
-      reply_markup: keyboard
+      reply_markup: keyboard,
+      disable_notification: true // تم الإضافة هنا
     }, { timeout: 10000 });
     return { success: true };
   } catch (err) {
@@ -289,7 +283,8 @@ async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
         text: caption,
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
-        reply_markup: keyboard
+        reply_markup: keyboard,
+        disable_notification: true // وتم الإضافة هنا
       }, { timeout: 10000 });
       return { success: true };
     } catch (fallbackErr) {
@@ -298,7 +293,8 @@ async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
           chat_id: CHAT_ID,
           text: caption,
           parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true }
+          link_preview_options: { is_disabled: true },
+          disable_notification: true // وتم الإضافة هنا
         }, { timeout: 10000 });
         return { success: true };
       } catch (finalErr) {
@@ -410,7 +406,6 @@ async function run() {
       const ageInHours = (now - articleDate.getTime()) / (1000 * 60 * 60);
       if (ageInHours > MAX_NEWS_AGE_HOURS) continue;
 
-      // تحديث: تمرير الـ Snippet لدالة الفحص التاريخي
       if (!isNewsAlreadySent(id, title, snippet)) {
         const analysis = classifyAndScore(title, snippet);
         if (analysis) {
@@ -433,7 +428,6 @@ async function run() {
 
   const selectedNews = [];
   for (const candidate of candidates) {
-    // تحديث: تمرير الـ Snippet لدالة الفحص اللحظي
     const isDuplicateInBatch = selectedNews.some(sel => isContentSimilar(sel.title, sel.snippet, candidate.title, candidate.snippet));
     if (!isDuplicateInBatch) {
       selectedNews.push(candidate);
@@ -457,7 +451,6 @@ async function run() {
     const caption = buildSafeCaption(news.category, news.title, summary);
     const result = await sendTelegramPhotoCard(highResImage, caption, news.link);
 
-    // تحديث: حفظ الـ Snippet داخل قاعدة البيانات لاستخدامه في المقارنات المستقبلية
     if (result.success) {
       sentArticles.push({ id: news.id, title: news.title, snippet: news.snippet });
       sentIdsSet.add(news.id);
