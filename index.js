@@ -7,18 +7,23 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 dotenv.config();
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN ? process.env.TELEGRAM_BOT_TOKEN.trim() : '';
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID ? process.env.TELEGRAM_CHAT_ID.trim() : '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.trim() : '';
 
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 const MAX_NEWS_AGE_HOURS = 36;
 
-// مسار التخزين الدائم (Railway Volume)
 const VOLUME_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || (fs.existsSync('/app/data') ? '/app/data' : '.');
 const DB_FILE = path.resolve(VOLUME_DIR, 'sent_news.json');
 
 const DEFAULT_FOOTBALL_IMAGE = 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=1200&q=80';
+
+function sanitizeLog(text) {
+  if (!text || typeof text !== 'string') return text;
+  if (!BOT_TOKEN) return text;
+  return text.replaceAll(BOT_TOKEN, '[REDACTED_TOKEN]');
+}
 
 const parser = new Parser({
   timeout: 8000,
@@ -40,6 +45,29 @@ const RSS_FEEDS = [
   'https://www.hespress.com/sport/feed',
   'https://arabic.cnn.com/api/v1/rss/sport/rss.xml'
 ];
+
+function normalizeArabic(text) {
+  if (!text) return '';
+  return text
+    .replace(/[\u064B-\u065F\u0670]/g, '')
+    .replace(/\u0640/g, '')
+    .replace(/[إأآا]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/[،؟؛!?,.:"'\-_()[\]{}]/g, ' ')
+    .replace(/[^\w\s\u0600-\u06FF]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const RAW_STOPWORDS = [
+  'في', 'من', 'على', 'إلى', 'الى', 'عن', 'مع', 'هذا', 'هذه', 'تم', 'بعد',
+  'قبل', 'حيث', 'كل', 'وقد', 'قد', 'كان', 'كانت', 'يكون', 'ان', 'أن', 'إن',
+  'التي', 'الذي', 'الذين', 'هو', 'هي', 'هم', 'ضد', 'بين', 'حول', 'خلال', 'نحو',
+  'بسبب', 'أمام', 'امام', 'رسميا', 'رسمياً'
+];
+
+const ARABIC_STOPWORDS = new Set(RAW_STOPWORDS.map(w => normalizeArabic(w)));
 
 const BLACKLIST_KEYWORDS = [
   'كرة السلة', 'كرة سلة', 'تنس', 'كرة اليد', 'كرة يد', 'كرة الطائرة', 'الطائرة',
@@ -69,42 +97,55 @@ const FOOTBALL_ENTITIES = [
   'كرة القدم', 'المونديال', 'كأس العالم', 'قمة', 'مواجهة'
 ];
 
-// كلمات شائعة يتم تجاهلها لحساب نسبة التطابق بدقة
-const ARABIC_STOPWORDS = new Set([
-  'في', 'من', 'على', 'إلى', 'الى', 'عن', 'مع', 'هذا', 'هذه', 'تم', 'بعد',
-  'قبل', 'حيث', 'كل', 'وقد', 'قد', 'كان', 'كانت', 'يكون', 'ان', 'أن', 'إن',
-  'التي', 'الذي', 'الذين', 'هو', 'هي', 'هم', 'ضد', 'بين', 'حول', 'خلال', 'نحو',
-  'بسبب', 'أمام', 'امام', 'رسميا', 'رسمياً'
-]);
-
-// خوارزمية تطابق العناوين لمنع تكرار نفس الخبر من مصادر متعددة
-function getTitleKeywords(text) {
-  if (!text) return new Set();
-  const clean = text
-    .replace(/[إأآا]/g, 'ا')
-    .replace(/ة/g, 'ه')
-    .replace(/ى/g, 'ي')
-    .replace(/[^\w\s\u0600-\u06FF]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return new Set(clean.split(' ').filter(w => w.length > 2 && !ARABIC_STOPWORDS.has(w)));
+function matchKeyword(normalizedText, rawKeyword) {
+  const normKeyword = normalizeArabic(rawKeyword).toLowerCase();
+  if (normKeyword.includes(' ')) {
+    return normalizedText.includes(normKeyword);
+  }
+  const regex = new RegExp(`(^|\\s)(?:ال)?${normKeyword}(?:\\s|$)`, 'i');
+  return regex.test(normalizedText);
 }
 
-function areTitlesSimilar(titleA, titleB) {
-  if (!titleA || !titleB) return false;
-  const setA = getTitleKeywords(titleA);
-  const setB = getTitleKeywords(titleB);
-  if (setA.size === 0 || setB.size === 0) return false;
+// ---------------------------------------------------------------------
+// الخوارزمية الجديدة: استخراج الكلمات المفتاحية من العنوان والمقتطف معاً
+function getTextKeywords(title, snippet = '') {
+  const text = `${title} ${snippet}`;
+  if (!text.trim()) return new Set();
+  const clean = normalizeArabic(text);
+  return new Set(
+    clean.split(' ').filter(w => w.length > 2 && !ARABIC_STOPWORDS.has(w))
+  );
+}
 
-  let common = 0;
-  for (const word of setA) {
-    if (setB.has(word)) common++;
+// الخوارزمية الجديدة: التقييم المزدوج (العناوين أولاً، ثم النص الكامل) بمعامل Dice
+function isContentSimilar(titleA, snippetA, titleB, snippetB) {
+  if (!titleA || !titleB) return false;
+
+  const titleSetA = getTextKeywords(titleA);
+  const titleSetB = getTextKeywords(titleB);
+
+  let titleCommon = 0;
+  for (const word of titleSetA) {
+    if (titleSetB.has(word)) titleCommon++;
   }
 
-  const minSize = Math.min(setA.size, setB.size);
-  return (common / minSize) >= 0.6; // تطابق بنسبة 60% أو أكثر في الكلمات الجوهرية
+  // 1. فحص العناوين بمعامل دايس: (2 * الكلمات المشتركة) / (مجموع الكلمات)
+  const titleDice = (2 * titleCommon) / (titleSetA.size + titleSetB.size || 1);
+  if (titleDice >= 0.65) return true; // لو العناوين متطابقة بنسبة 65%، فهو نفس الخبر
+
+  // 2. إذا لم تتطابق العناوين بقوة، نفحص المحتوى الشامل (العنوان + التفاصيل)
+  const fullSetA = getTextKeywords(titleA, snippetA);
+  const fullSetB = getTextKeywords(titleB, snippetB);
+
+  let fullCommon = 0;
+  for (const word of fullSetA) {
+    if (fullSetB.has(word)) fullCommon++;
+  }
+
+  const fullDice = (2 * fullCommon) / (fullSetA.size + fullSetB.size || 1);
+  return fullDice >= 0.55; // تطابق 55% في السياق الكامل يعني أنه نفس الموضوع
 }
+// ---------------------------------------------------------------------
 
 function escapeHtml(text) {
   if (!text) return '';
@@ -114,15 +155,25 @@ function escapeHtml(text) {
     .replace(/>/g, '&gt;');
 }
 
-// قراءة قاعدة البيانات مع التوافق العكسي
+function isValidHttpUrl(string) {
+  try {
+    const url = new URL(string);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function loadSentArticles() {
   try {
     if (fs.existsSync(DB_FILE)) {
       const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
-      return data.map(item => (typeof item === 'string' ? { id: item, title: '' } : item));
+      if (Array.isArray(data)) {
+        return data.map(item => (typeof item === 'string' ? { id: item, title: '', snippet: '' } : item));
+      }
     }
   } catch (err) {
-    console.error('خطأ في قراءة ملف التخزين الدائم:', err.message);
+    console.error('خطأ في قراءة ملف التخزين الدائم:', sanitizeLog(err.message));
   }
   return [];
 }
@@ -133,26 +184,27 @@ function saveSentArticles(articlesList) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    fs.writeFileSync(DB_FILE, JSON.stringify(articlesList.slice(-300), null, 2), 'utf-8');
-    console.log(`تم حفظ قاعدة البيانات بنجاح في: ${DB_FILE}`);
+    const tmpFile = `${DB_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(articlesList.slice(-300), null, 2), 'utf-8');
+    fs.renameSync(tmpFile, DB_FILE);
   } catch (err) {
-    console.error('خطأ في كتابة ملف التخزين الدائم:', err.message);
+    console.error('خطأ في كتابة ملف التخزين الدائم:', sanitizeLog(err.message));
   }
 }
 
 const sentArticles = loadSentArticles();
 const sentIdsSet = new Set(sentArticles.map(a => a.id));
 
-function isNewsAlreadySent(id, title) {
+// تمرير التفاصيل (snippet) لدالة الفحص التاريخية
+function isNewsAlreadySent(id, title, snippet) {
   if (sentIdsSet.has(id)) return true;
   const recentItems = sentArticles.slice(-60);
-  return recentItems.some(sentItem => areTitlesSimilar(sentItem.title, title));
+  return recentItems.some(sentItem => isContentSimilar(sentItem.title, sentItem.snippet || '', title, snippet));
 }
 
 function extractRssImageUrl(item) {
-  if (item.enclosure?.url) return item.enclosure.url;
-  if (item.mediaContent?.$?.url) return item.mediaContent.$.url;
-  if (item['media:content']?.$?.url) return item['media:content'].$.url;
+  if (item.enclosure?.url && item.enclosure.url.startsWith('http')) return item.enclosure.url;
+  if (item.mediaContent?.$?.url && item.mediaContent.$.url.startsWith('http')) return item.mediaContent.$.url;
 
   const htmlContent = item.content || item.description || '';
   const imgMatch = htmlContent.match(/<img[^>]+src=["']([^"']+)["']/i);
@@ -177,10 +229,11 @@ async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
                     html.match(/<meta[^>]*name=["'](?:twitter:image|twitter:image:src)["'][^>]*content=["']([^"']+)["']/i);
 
     if (ogMatch && ogMatch[1]) {
-      return ogMatch[1].replace(/&amp;/g, '&');
+      const candidate = ogMatch[1].replace(/&amp;/g, '&');
+      if (isValidHttpUrl(candidate)) return candidate;
     }
   } catch {
-    // الرجوع للبديل فوراً
+    //
   }
 
   if (fallbackUrl && fallbackUrl !== DEFAULT_FOOTBALL_IMAGE) {
@@ -190,49 +243,69 @@ async function fetchHighResImageUrl(articleUrl, fallbackUrl) {
   return fallbackUrl;
 }
 
+function buildSafeCaption(category, title, summary) {
+  const safeCategory = escapeHtml(category);
+  const safeTitle = escapeHtml(title);
+  const header = `<b>${safeCategory} | ${safeTitle}</b>`;
+
+  if (!summary) return header;
+
+  const maxSummaryLen = 1000 - header.length - 25;
+  let cleanSummary = summary.trim();
+
+  if (cleanSummary.length > maxSummaryLen && maxSummaryLen > 30) {
+    cleanSummary = cleanSummary.slice(0, maxSummaryLen).replace(/\s+\S*$/, '') + '...';
+  }
+
+  return `${header}\n\n📌 <i>${escapeHtml(cleanSummary)}</i>`;
+}
+
 async function sendTelegramPhotoCard(photoUrl, caption, articleUrl) {
   const photoEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
   const messageEndpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
 
-  let safeCaption = caption;
-  if (safeCaption.length > 1000) {
-    safeCaption = safeCaption.slice(0, 997) + '...';
-  }
-
-  const inlineKeyboard = {
-    inline_keyboard: [
-      [
-        {
-          text: '🌐 قراءة التفاصيل من المصدر',
-          url: articleUrl
-        }
-      ]
-    ]
-  };
+  const hasValidUrl = isValidHttpUrl(articleUrl);
+  const keyboard = hasValidUrl ? {
+    inline_keyboard: [[{ text: '🌐 قراءة التفاصيل من المصدر', url: articleUrl }]]
+  } : undefined;
 
   try {
     await axios.post(photoEndpoint, {
       chat_id: CHAT_ID,
       photo: photoUrl,
-      caption: safeCaption,
+      caption: caption,
       parse_mode: 'HTML',
-      reply_markup: inlineKeyboard
+      reply_markup: keyboard
     }, { timeout: 10000 });
-    return true;
+    return { success: true };
   } catch (err) {
-    console.error('فشل إرسال الصورة، جاري الإرسال كرسالة نصية:', err.response?.data?.description || err.message);
+    const errorStatus = err.response?.status;
+    const errorDesc = err.response?.data?.description || err.message;
+    console.error('فشل إرسال الصورة:', sanitizeLog(errorDesc));
+
     try {
       await axios.post(messageEndpoint, {
         chat_id: CHAT_ID,
-        text: safeCaption,
+        text: caption,
         parse_mode: 'HTML',
-        disable_web_page_preview: true,
-        reply_markup: inlineKeyboard
+        link_preview_options: { is_disabled: true },
+        reply_markup: keyboard
       }, { timeout: 10000 });
-      return true;
+      return { success: true };
     } catch (fallbackErr) {
-      console.error('فشل الإرسال البديل أيضاً:', fallbackErr.response?.data?.description || fallbackErr.message);
-      return false;
+      try {
+        await axios.post(messageEndpoint, {
+          chat_id: CHAT_ID,
+          text: caption,
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true }
+        }, { timeout: 10000 });
+        return { success: true };
+      } catch (finalErr) {
+        console.error('فشل الإرسال النهائي:', sanitizeLog(finalErr.response?.data?.description || finalErr.message));
+        const isPermanent = errorStatus === 400 || finalErr.response?.status === 400;
+        return { success: false, permanentError: isPermanent };
+      }
     }
   }
 }
@@ -259,7 +332,7 @@ async function generateAISummary(title, snippet, category) {
       const text = result.response.text()?.trim();
       if (text) return text;
     } catch (err) {
-      console.warn(`تعذر التلخيص بنموذج ${modelName}:`, err.message || err);
+      console.warn(`تعذر التلخيص بنموذج ${modelName}:`, sanitizeLog(err.message || String(err)));
     }
   }
 
@@ -267,20 +340,21 @@ async function generateAISummary(title, snippet, category) {
 }
 
 function classifyAndScore(title, snippet = '') {
-  const cleanText = `${title} ${snippet}`.toLowerCase();
+  const rawText = `${title} ${snippet}`;
+  const cleanText = normalizeArabic(rawText).toLowerCase();
 
-  if (BLACKLIST_KEYWORDS.some(w => cleanText.includes(w.toLowerCase()))) return null;
+  if (BLACKLIST_KEYWORDS.some(w => matchKeyword(cleanText, w))) return null;
 
   let score = 0;
   let category = '';
 
-  if (TRANSFER_KEYWORDS.some(w => cleanText.includes(w.toLowerCase()))) {
+  if (TRANSFER_KEYWORDS.some(w => matchKeyword(cleanText, w))) {
     score += 5;
     category = 'انتقالات 🔄';
-  } else if (RESULTS_KEYWORDS.some(w => cleanText.includes(w.toLowerCase()))) {
+  } else if (RESULTS_KEYWORDS.some(w => matchKeyword(cleanText, w))) {
     score += 5;
     category = 'نتائج ومباريات ⚽';
-  } else if (FOOTBALL_ENTITIES.some(e => cleanText.includes(e.toLowerCase()))) {
+  } else if (FOOTBALL_ENTITIES.some(e => matchKeyword(cleanText, e))) {
     category = 'أخبار الكرة ⚽';
     score += 3;
   }
@@ -288,7 +362,7 @@ function classifyAndScore(title, snippet = '') {
   if (!category) return null;
 
   FOOTBALL_ENTITIES.forEach(entity => {
-    if (cleanText.includes(entity.toLowerCase())) score += 2;
+    if (matchKeyword(cleanText, entity)) score += 2;
   });
 
   return { score, category };
@@ -297,7 +371,7 @@ function classifyAndScore(title, snippet = '') {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function run() {
-  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار بالجلب المتوازي والفلترة الدلالية الذكية...`);
+  console.log(`[${new Date().toISOString()}] بدء فحص الأخبار بالنسخة الشاملة المحصنة...`);
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error('بيانات تليجرام مفقودة.');
@@ -306,13 +380,12 @@ async function run() {
 
   const now = Date.now();
 
-  // 1. الجلب المتوازي المتزامن لجميع المصادر في نفس اللحظة
   const feedPromises = RSS_FEEDS.map(async (feedUrl) => {
     try {
       const feed = await parser.parseURL(feedUrl);
       return feed.items || [];
     } catch (err) {
-      console.error(`خطأ أثناء جلب الخلاصة ${feedUrl}:`, err.message);
+      console.error(`خطأ أثناء جلب الخلاصة ${feedUrl}:`, sanitizeLog(err.message));
       return [];
     }
   });
@@ -323,7 +396,7 @@ async function run() {
   for (const items of allFeedsItems) {
     for (const item of items) {
       const rawLink = item.link?.trim();
-      if (!rawLink || !rawLink.startsWith('http')) continue;
+      if (!rawLink || !isValidHttpUrl(rawLink)) continue;
 
       const id = item.guid || rawLink;
       const title = item.title?.trim() || '';
@@ -331,14 +404,14 @@ async function run() {
 
       const snippet = item.contentSnippet?.trim() || item.content?.trim() || '';
 
-      let articleDate = new Date(item.pubDate || item.isoDate || now);
+      let articleDate = new Date(item.isoDate || item.pubDate || now);
       if (isNaN(articleDate.getTime())) articleDate = new Date(now);
 
       const ageInHours = (now - articleDate.getTime()) / (1000 * 60 * 60);
       if (ageInHours > MAX_NEWS_AGE_HOURS) continue;
 
-      // فحص عدم التكرار (سواء بالرابط أو بالتشابه الدلالي مع الأخبار السابقة)
-      if (!isNewsAlreadySent(id, title)) {
+      // تحديث: تمرير الـ Snippet لدالة الفحص التاريخي
+      if (!isNewsAlreadySent(id, title, snippet)) {
         const analysis = classifyAndScore(title, snippet);
         if (analysis) {
           candidates.push({
@@ -356,13 +429,12 @@ async function run() {
     }
   }
 
-  // ترتيب المرشحين حسب الأهمية وحداثة النشر
   candidates.sort((a, b) => b.score !== a.score ? b.score - a.score : b.pubDate - a.pubDate);
 
-  // 2. الفلترة الدلالية لمنع تكرار نفس الحدث بين المصادر في نفس الدورة
   const selectedNews = [];
   for (const candidate of candidates) {
-    const isDuplicateInBatch = selectedNews.some(sel => areTitlesSimilar(sel.title, candidate.title));
+    // تحديث: تمرير الـ Snippet لدالة الفحص اللحظي
+    const isDuplicateInBatch = selectedNews.some(sel => isContentSimilar(sel.title, sel.snippet, candidate.title, candidate.snippet));
     if (!isDuplicateInBatch) {
       selectedNews.push(candidate);
       if (selectedNews.length === 3) break;
@@ -374,7 +446,6 @@ async function run() {
     process.exit(0);
   }
 
-  // إرسال الأخبار المختارة وتوليد الملخصات
   for (let i = 0; i < selectedNews.length; i++) {
     const news = selectedNews[i];
 
@@ -383,22 +454,22 @@ async function run() {
       generateAISummary(news.title, news.snippet, news.category)
     ]);
 
-    const safeCategory = escapeHtml(news.category);
-    const safeTitle = escapeHtml(news.title);
-    const safeSummary = summary ? escapeHtml(summary) : '';
+    const caption = buildSafeCaption(news.category, news.title, summary);
+    const result = await sendTelegramPhotoCard(highResImage, caption, news.link);
 
-    let caption = `<b>${safeCategory} | ${safeTitle}</b>\n\n`;
-    if (safeSummary) {
-      caption += `📌 <i>${safeSummary}</i>`;
-    }
-
-    const isSuccess = await sendTelegramPhotoCard(highResImage, caption, news.link);
-    if (isSuccess) {
-      sentArticles.push({ id: news.id, title: news.title });
+    // تحديث: حفظ الـ Snippet داخل قاعدة البيانات لاستخدامه في المقارنات المستقبلية
+    if (result.success) {
+      sentArticles.push({ id: news.id, title: news.title, snippet: news.snippet });
       sentIdsSet.add(news.id);
+      saveSentArticles(sentArticles);
       console.log(`تم إرسال البطاقة التفاعلية بنجاح (${i + 1}/${selectedNews.length}): ${news.title}`);
+    } else if (result.permanentError) {
+      console.warn(`تم تجاوز الخبر وحفظه لتفادي تعطيل الطابور (خطأ دائم): ${news.title}`);
+      sentArticles.push({ id: news.id, title: news.title, snippet: news.snippet });
+      sentIdsSet.add(news.id);
+      saveSentArticles(sentArticles);
     } else {
-      console.warn(`تم تخطي حفظ الخبر لعدم تأكيد وصوله لتليجرام: ${news.title}`);
+      console.warn(`تم تخطي حفظ الخبر لتعثر الإرسال المؤقت: ${news.title}`);
     }
 
     if (i < selectedNews.length - 1) {
@@ -406,12 +477,12 @@ async function run() {
     }
   }
 
-  saveSentArticles(sentArticles);
   console.log(`اكتملت الدورة بنجاح.`);
   process.exit(0);
 }
 
 run().catch(err => {
-  console.error('فشل غير متوقع أثناء تشغيل البوت:', err);
+  const errText = err?.stack || err?.message || String(err);
+  console.error('فشل غير متوقع أثناء تشغيل البوت:', sanitizeLog(errText));
   process.exit(1);
 });
